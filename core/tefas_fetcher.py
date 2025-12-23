@@ -7,32 +7,45 @@ import os
 
 class TefasFetcher:
     def __init__(self):
-        # Tarayıcı Ayarları
-        options = uc.ChromeOptions()
-        # options.add_argument('--headless') # Headless kapalı (TEFAS engeli için)
+        print("🔧 Chrome Tarayıcısı Hazırlanıyor...")
         
-        self.driver = uc.Chrome(options=options, use_subprocess=True)
+        self.driver = None
         
-        # Pencereyi küçült (Rahatsız etmesin)
-        try:
-            self.driver.minimize_window()
-        except:
-            pass
-            
-        self.driver.set_script_timeout(45)
-        self.driver.set_page_load_timeout(45)
+        # --- GÜVENLİ AÇILIŞ DÖNGÜSÜ ---
+        # Chrome bazen ilk seferde açılmazsa, 3 kereye kadar tekrar dener.
+        for deneme in range(3):
+            try:
+                options = uc.ChromeOptions()
+                options.add_argument("--no-sandbox")
+                options.add_argument("--disable-dev-shm-usage")
+                # options.add_argument("--headless") # Arka planda çalışsın istersen aç
+                
+                self.driver = uc.Chrome(options=options, use_subprocess=True)
+                self.driver.set_page_load_timeout(60)
+                
+                # Siteye Git
+                print(f"🌍 TEFAS'a bağlanılıyor... (Deneme: {deneme+1})")
+                self.driver.get("https://www.tefas.gov.tr/TarihselVeriler.aspx")
+                
+                # Sayfanın oturması için bekle
+                time.sleep(3)
+                print("✅ Bağlantı Başarılı.")
+                break # Başarılıysa döngüden çık
+                
+            except Exception as e:
+                print(f"⚠️ Chrome açılırken hata oldu: {e}")
+                # Eğer açıldıysa ama bozuksa kapat
+                if self.driver:
+                    try: self.driver.quit()
+                    except: pass
+                time.sleep(2) # Biraz bekle tekrar dene
         
-        # TEFAS'a Bağlan
-        self.driver.get("https://www.tefas.gov.tr/TarihselVeriler.aspx")
-        
-        # İnsan Taklidi (Scroll)
-        time.sleep(2)
-        self.driver.execute_script("window.scrollTo(0, 300);")
-        time.sleep(1)
-        self.driver.execute_script("window.scrollTo(0, 0);")
-        time.sleep(2)
+        if self.driver is None:
+            raise Exception("❌ Chrome 3 denemeye rağmen açılamadı! Lütfen 'taskkill' komutunu çalıştırın.")
 
     def fetch_data(self, fund_code, start_date, end_date):
+        if not self.driver: return pd.DataFrame()
+
         start_fmt = datetime.strptime(start_date, "%Y-%m-%d").strftime("%d.%m.%Y")
         end_fmt = datetime.strptime(end_date, "%Y-%m-%d").strftime("%d.%m.%Y")
         
@@ -42,44 +55,30 @@ class TefasFetcher:
         
         fetch("https://www.tefas.gov.tr/api/DB/BindHistoryInfo", {{
             method: "POST",
-            headers: {{
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                "X-Requested-With": "XMLHttpRequest"
-            }},
+            headers: {{ "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "X-Requested-With": "XMLHttpRequest" }},
             body: formData
-        }})
-        .then(response => {{
-            if (!response.ok) throw new Error("HTTP Hata");
-            return response.json();
-        }})
-        .then(data => callback(data))
-        .catch(error => callback({{ "error": error.toString() }}));
+        }}).then(r => r.json()).then(d => callback(d)).catch(e => callback({{ "error": e.toString() }}));
         """
 
         try:
-            time.sleep(random.uniform(1.0, 2.0)) # Bekleme süresi
+            # Çok hızlı istek atıp siteyi yormamak için kısa bekleme
+            time.sleep(random.uniform(0.5, 1.5))
+            
             result = self.driver.execute_async_script(js_script)
             
             if result and "data" in result:
-                data = result["data"]
-                df = pd.DataFrame(data)
-                df = df.rename(columns={"TARIH": "Date", "FIYAT": "Price", "FONKODU": "FundCode", "FONUNVAN": "FundName"})
-                return df
+                df = pd.DataFrame(result["data"])
+                if not df.empty:
+                    # İŞTE DÜZELTİLEN SATIR BURASI:
+                    return df.rename(columns={"TARIH": "Date", "FIYAT": "Price", "FONKODU": "FundCode", "FONUNVAN": "FundName"})
             return pd.DataFrame()
-
-        except Exception:
+        except Exception as e:
+            print(f"Veri çekme hatası ({fund_code}): {e}")
             return pd.DataFrame()
 
     def close(self):
-        # 1. Kibarca kapat
         try:
-            self.driver.quit()
-        except:
-            pass
-        
-        # 2. Zorla öldür (Hata almamak için)
-        try:
-            if hasattr(self.driver, 'service') and self.driver.service.process:
-                self.driver.service.process.kill()
+            if self.driver:
+                self.driver.quit()
         except:
             pass
