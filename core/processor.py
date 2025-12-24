@@ -43,9 +43,6 @@ class DataProcessor:
         df['Daily_Return'] = df['Price'].pct_change()
         df['Cumulative_Return'] = (1 + df['Daily_Return']).cumprod() - 1
         df['MA_30'] = df['Price'].rolling(window=30).mean()
-        
-        # Hareketli ortalama ilk 30 günü NaN yapar.
-        df.dropna(inplace=True)
         return df
 
     def calculate_risk_metrics(self, df):
@@ -56,7 +53,7 @@ class DataProcessor:
             return None
 
         # Günlük Getiri
-        daily_returns = df['Price'].pct_change().dropna()
+        daily_returns = df['Daily_Return'].dropna() if 'Daily_Return' in df.columns else df['Price'].pct_change().dropna()
         
         # 1. Toplam Getiri (%)
         total_return = ((df['Price'].iloc[-1] - df['Price'].iloc[0]) / df['Price'].iloc[0])
@@ -143,15 +140,11 @@ class DataProcessor:
 
     def normalize_for_comparison(self, df_fund, df_benchmark, benchmark_name="USD/TRY"):
         """
-        YENİ EKLENEN FONKSİYON: 
-        Fon ve Benchmark (Dolar/Altın) verilerini tarihe göre eşleştirip,
-        ikisini de aynı noktadan (0%) başlatarak kıyaslama tablosu oluşturur.
-        
+        Fon ve Benchmark (Dolar/Altın) kıyaslaması için normalize eder.
         """
         if df_fund.empty or df_benchmark.empty:
             return pd.DataFrame()
 
-        # 1. Tarihleri eşleştir (Inner Join: İkisinde de olan tarihleri al)
         merged = pd.merge(
             df_fund[["Date", "Price", "FundName"]],
             df_benchmark[["Date", "Price"]],
@@ -162,10 +155,187 @@ class DataProcessor:
 
         if merged.empty: return pd.DataFrame()
 
-        # 2. İkisini de 0 noktasından başlat (Rebase)
-        # Formül: (Fiyat / İlk_Gün_Fiyatı) - 1
-        # Böylece grafik 0'dan başlar ve kimin daha çok kazandırdığı net görünür.
         merged["Fund_Cumulative"] = (merged["Price"] / merged["Price"].iloc[0]) - 1
         merged[f"{benchmark_name}_Cumulative"] = (merged["Price_Bench"] / merged["Price_Bench"].iloc[0]) - 1
 
         return merged
+
+    # ---------------------------------------------------------
+    # SİMÜLASYON FONKSİYONU
+    # ---------------------------------------------------------
+    def calculate_portfolio_simulation(self, full_df, weights_dict, initial_capital=100000):
+        """
+        Birden fazla fonun ağırlıklı ortalamasını alarak SANAL PORTFÖY oluşturur.
+        """
+        if full_df.empty or not weights_dict:
+            return pd.DataFrame()
+
+        selected_funds = list(weights_dict.keys())
+        df_filtered = full_df[full_df['FundCode'].isin(selected_funds)].copy()
+        
+        pivot_returns = df_filtered.pivot_table(index='Date', columns='FundCode', values='Daily_Return').dropna()
+
+        if pivot_returns.empty:
+            return pd.DataFrame()
+
+        ordered_weights = [weights_dict[code] for code in pivot_returns.columns]
+        
+        total_weight = sum(ordered_weights)
+        if total_weight > 0:
+            ordered_weights = [w / total_weight for w in ordered_weights]
+        
+        portfolio_daily_ret = pivot_returns.dot(ordered_weights)
+        
+        portfolio_df = pd.DataFrame(index=portfolio_daily_ret.index)
+        portfolio_df['Daily_Return'] = portfolio_daily_ret
+        portfolio_df['Cumulative_Return'] = (1 + portfolio_df['Daily_Return']).cumprod() - 1
+        portfolio_df['Price'] = initial_capital * (1 + portfolio_df['Cumulative_Return'])
+        
+        portfolio_df = portfolio_df.reset_index()
+        portfolio_df['FundCode'] = "PORTFOY"
+        portfolio_df['FundName'] = "Simülasyon Portföyüm"
+        
+        return portfolio_df
+
+    # ---------------------------------------------------------
+    # MARKOWITZ ETKİN SINIR (OPTİMİZASYON)
+    # ---------------------------------------------------------
+    def calculate_efficient_frontier(self, full_df, selected_funds, num_portfolios=2000):
+        if full_df.empty or len(selected_funds) < 2:
+            return pd.DataFrame(), None
+
+        df_filtered = full_df[full_df['FundCode'].isin(selected_funds)].copy()
+        pivot_returns = df_filtered.pivot_table(index='Date', columns='FundCode', values='Daily_Return').dropna()
+
+        if pivot_returns.empty:
+            return pd.DataFrame(), None
+
+        mean_returns = pivot_returns.mean() * 252
+        cov_matrix = pivot_returns.cov() * 252
+        num_assets = len(selected_funds)
+
+        results = []
+        max_sharpe_ratio = -1
+        optimal_weights = []
+
+        for _ in range(num_portfolios):
+            weights = np.random.random(num_assets)
+            weights /= np.sum(weights)
+
+            portfolio_return = np.sum(mean_returns * weights)
+            portfolio_std_dev = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+            
+            if portfolio_std_dev == 0:
+                sharpe_ratio = 0
+            else:
+                sharpe_ratio = portfolio_return / portfolio_std_dev
+
+            if sharpe_ratio > max_sharpe_ratio:
+                max_sharpe_ratio = sharpe_ratio
+                optimal_weights = weights
+
+            results.append({
+                'Return': portfolio_return,
+                'Volatility': portfolio_std_dev,
+                'Sharpe': sharpe_ratio
+            })
+
+        sim_df = pd.DataFrame(results)
+        best_weights = {col: round(w, 2) for col, w in zip(pivot_returns.columns, optimal_weights)}
+        best_portfolio_stats = {
+            'Return': np.sum(mean_returns * optimal_weights),
+            'Volatility': np.sqrt(np.dot(optimal_weights.T, np.dot(cov_matrix, optimal_weights))),
+            'Sharpe': max_sharpe_ratio,
+            'Weights': best_weights
+        }
+        return sim_df, best_portfolio_stats
+
+    # ---------------------------------------------------------
+    # VAR (VALUE AT RISK) HESAPLAMA
+    # ---------------------------------------------------------
+    def calculate_value_at_risk(self, full_df, weights_dict, initial_capital=100000, confidence_level=0.95):
+        if full_df.empty or not weights_dict:
+            return None
+
+        selected_funds = list(weights_dict.keys())
+        df_filtered = full_df[full_df['FundCode'].isin(selected_funds)].copy()
+        pivot_returns = df_filtered.pivot_table(index='Date', columns='FundCode', values='Daily_Return').dropna()
+
+        if pivot_returns.empty: return None
+
+        ordered_weights = np.array([weights_dict[code] for code in pivot_returns.columns])
+        total_weight = sum(ordered_weights)
+        if total_weight > 0:
+            ordered_weights = ordered_weights / total_weight
+
+        cov_matrix = pivot_returns.cov()
+        avg_return = pivot_returns.mean()
+        
+        portfolio_mean = np.sum(avg_return * ordered_weights)
+        portfolio_std = np.sqrt(np.dot(ordered_weights.T, np.dot(cov_matrix, ordered_weights)))
+
+        if confidence_level == 0.95: z_score = 1.645
+        elif confidence_level == 0.99: z_score = 2.33
+        else: z_score = 1.645
+
+        var_percent = (z_score * portfolio_std) - portfolio_mean
+        var_amount = initial_capital * var_percent
+
+        return {
+            "VaR_Amount": var_amount,
+            "VaR_Percent": var_percent,
+            "Confidence": confidence_level
+        }
+
+    # ---------------------------------------------------------
+    # YENİ ÖZELLİK 3: MONTE CARLO SİMÜLASYONU
+    # ---------------------------------------------------------
+    def run_monte_carlo_simulation(self, full_df, weights_dict, initial_capital, days_forward=180, num_simulations=50):
+        """
+        Geometrik Brownian Motion kullanarak geleceğe yönelik fiyat senaryoları üretir.
+        """
+        if full_df.empty or not weights_dict:
+            return pd.DataFrame()
+
+        # 1. Geçmiş Veriden Portföy İstatistiği Çıkar
+        selected_funds = list(weights_dict.keys())
+        df_filtered = full_df[full_df['FundCode'].isin(selected_funds)].copy()
+        pivot_returns = df_filtered.pivot_table(index='Date', columns='FundCode', values='Daily_Return').dropna()
+
+        if pivot_returns.empty: return pd.DataFrame()
+
+        ordered_weights = np.array([weights_dict[code] for code in pivot_returns.columns])
+        total_weight = sum(ordered_weights)
+        if total_weight > 0:
+            ordered_weights = ordered_weights / total_weight
+
+        # Günlük Ortalama ve Varyans
+        avg_daily_return = np.sum(pivot_returns.mean() * ordered_weights)
+        daily_volatility = np.sqrt(np.dot(ordered_weights.T, np.dot(pivot_returns.cov(), ordered_weights)))
+        
+        # 2. Simülasyonu Başlat
+        simulation_df = pd.DataFrame()
+        
+        # Gelecek tarihler
+        last_date = df_filtered['Date'].max()
+        future_dates = [last_date + timedelta(days=i) for i in range(1, days_forward + 1)]
+        simulation_df['Date'] = future_dates
+
+        # Her bir senaryo için döngü
+        for sim in range(num_simulations):
+            # Rastgele Şoklar (Normal Dağılım)
+            random_shocks = np.random.normal(0, 1, days_forward)
+            
+            # Fiyat Yolu Formülü (Geometric Brownian Motion)
+            # Price_t = Price_t-1 * exp((mu - 0.5 * sigma^2) + sigma * Z)
+            
+            simulated_returns = (avg_daily_return - 0.5 * daily_volatility**2) + (daily_volatility * random_shocks)
+            
+            price_path = [initial_capital]
+            for r in simulated_returns:
+                price_path.append(price_path[-1] * np.exp(r))
+            
+            # İlk gün (bugün) hariç geleceği al
+            simulation_df[f'Senaryo {sim+1}'] = price_path[1:]
+
+        return simulation_df

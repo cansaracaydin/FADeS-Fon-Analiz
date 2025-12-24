@@ -1,6 +1,7 @@
 from core.tefas_fetcher import TefasFetcher
 from core.processor import DataProcessor
 from core.visualizer import Visualizer
+from core.market_fetcher import MarketFetcher # <-- YENİ: Dolar için eklendi
 from datetime import datetime, timedelta
 import pandas as pd
 import os
@@ -8,6 +9,7 @@ import os
 def main():
     # --- AYARLAR ---
     fon_kodlari = ["TCD", "MAC", "TI3", "IPJ"] 
+    benchmark_sembol = "USDTRY=X" # Dolar: USDTRY=X, Altın: GC=F
     gun_sayisi = 90
     
     bugun = datetime.now()
@@ -19,26 +21,27 @@ def main():
     print(f"--- FADeS Analiz Sistemi ({str_baslangic} - {str_bugun}) ---")
 
     # Motorları Başlat
-    fetcher = TefasFetcher() # Tarayıcı açılacak
-    processor = DataProcessor()
-    visualizer = Visualizer()
+    fetcher = TefasFetcher()      # Fon verisi için (Chrome)
+    market_fetcher = MarketFetcher() # Piyasa verisi için (Yahoo) <-- YENİ
+    processor = DataProcessor()   # Hesaplamalar
+    visualizer = Visualizer()     # Grafik
     
     tum_fonlar = []
 
     try:
-        # --- VERİ İŞLEME DÖNGÜSÜ ---
+        # 1. FONLARI ÇEK
+        # -------------------------------------------------
+        print(f"\n📊 FONLAR İŞLENİYOR...")
         for kod in fon_kodlari:
-            print(f"> {kod} işleniyor...")
+            print(f"> {kod} verisi alınıyor...")
             
-            # 1. ÇEK (Browser üzerinden)
+            # Browser üzerinden çek
             raw_df = fetcher.fetch_data(kod, str_baslangic, str_bugun)
             
             if raw_df.empty: continue
 
-            # 2. TEMİZLE
+            # Temizle ve Hesapla
             clean_df = processor.clean_data(raw_df)
-            
-            # 3. HESAPLA
             final_df = processor.add_financial_metrics(clean_df)
             
             if final_df.empty:
@@ -48,10 +51,29 @@ def main():
             tum_fonlar.append(final_df)
             
             son_getiri = final_df['Cumulative_Return'].iloc[-1] * 100
-            print(f"  + Getiri: %{son_getiri:.2f}")
+            print(f"  + {kod} Getiri: %{son_getiri:.2f}")
+
+        # 2. BENCHMARK (DOLAR) VERİSİNİ ÇEK VE EKLE
+        # -------------------------------------------------
+        print(f"\n🌍 PİYASA VERİSİ (BENCHMARK) EKLENİYOR...")
+        bench_df = market_fetcher.fetch_benchmark(benchmark_sembol, str_baslangic, str_bugun)
+
+        if not bench_df.empty:
+            # Doları da fon formatına sokuyoruz (Getiri hesabı için)
+            bench_df = processor.add_financial_metrics(bench_df)
+            
+            # Sisteme tanıtalım
+            bench_df["FundCode"] = "USD/TRY"
+            bench_df["FundName"] = "Dolar Kuru"
+            
+            tum_fonlar.append(bench_df) # <-- Listeye ekledik!
+            
+            dolar_getiri = bench_df['Cumulative_Return'].iloc[-1] * 100
+            print(f"  + USD/TRY Getiri: %{dolar_getiri:.2f}")
+        else:
+            print("  ⚠️ Piyasa verisi çekilemedi.")
 
     finally:
-        # Hata olsa bile tarayıcıyı kapat
         print("\n🛑 Tarayıcı kapatılıyor...")
         fetcher.close()
 
@@ -59,11 +81,15 @@ def main():
     if tum_fonlar:
         full_report = pd.concat(tum_fonlar, ignore_index=True)
         
+        # Klasör kontrolü
         if not os.path.exists('reports'): os.makedirs('reports')
+        
+        # Excel Kaydet
         excel_path = f"reports/Analiz_Raporu_{bugun.strftime('%Y%m%d')}.xlsx"
         full_report.to_excel(excel_path, index=False)
         print(f"\n✅ EXCEL HAZIR: {excel_path}")
 
+        # Grafik Çiz (Artık içinde Dolar da var)
         visualizer.create_performance_chart(full_report)
     else:
         print("\n❌ Hiçbir veri elde edilemedi.")
