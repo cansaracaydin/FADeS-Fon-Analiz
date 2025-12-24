@@ -8,9 +8,21 @@ import time
 from core.tefas_fetcher import TefasFetcher
 from core.processor import DataProcessor
 from core.market_fetcher import MarketFetcher
+from core.inflation_fetcher import InflationFetcher
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="FADeS - Fon Analiz Paneli", layout="wide", page_icon="📈")
+
+# CSS: Görsel İyileştirmeler
+st.markdown("""
+    <style>
+    /* Başlık rengini zorla BEYAZ yap (Koyu modda görünmesi için) */
+    h1 { color: white !important; }
+    
+    /* Metrik değerlerini (Rakamları) mavi yap */
+    div[data-testid="stMetricValue"] { font-size: 24px; color: #007bff; }
+    </style>
+    """, unsafe_allow_html=True)
 
 st.title("📊 Gelişmiş Fon Analiz ve Simülasyon Paneli")
 
@@ -24,19 +36,106 @@ calisma_modu = st.sidebar.radio(
     ["📈 Detaylı Analiz", "🆚 TEFAS Karşılaştırma", "💼 Portföy Simülasyonu"]
 )
 
-# 2. BENCHMARK SEÇİMİ
+# 2. TARİH SEÇİMİ (ENFLASYON İÇİN YUKARI TAŞINDI)
+st.sidebar.markdown("---")
+st.sidebar.subheader("📅 Tarih Aralığı")
+col_t1, col_t2 = st.sidebar.columns(2)
+baslangic_tarihi = col_t1.date_input("Başlangıç", datetime.now() - timedelta(days=365))
+bitis_tarihi = col_t2.date_input("Bitiş", datetime.now())
+
+# 3. BENCHMARK SEÇİMİ
 benchmark_secimi = st.sidebar.selectbox(
     "Karşılaştırma Ölçütü (Benchmark):",
     ["Yok", "Dolar (USD/TRY)", "Altın (Ons/USD)"]
 )
-st.sidebar.markdown("---")
 
-# 3. FON LİSTESİ
+# --- DİNAMİK ENFLASYON YÖNETİMİ (TAM KARNE MODU) ---
+st.sidebar.markdown("---")
+with st.sidebar.expander("💸 Enflasyon Verileri (TCMB/TÜİK Karnesi)", expanded=False):
+    st.caption(f"TCMB formatında tüm göstergeler ({baslangic_tarihi} - {bitis_tarihi})")
+    
+    evds_api_key = st.text_input("TCMB API Anahtarı (Opsiyonel)", type="password")
+    
+    col_api, col_manual = st.columns(2)
+    
+    # 1. API İLE ÇEK
+    if evds_api_key:
+        if col_api.button("🔄 TCMB'den Çek", key="btn_tcmb_cek"):
+            with st.spinner("TCMB'den detaylı veriler alınıyor..."):
+                inf_fetcher = InflationFetcher(evds_api_key)
+                
+                # Fetcher artık 4 farklı hesaplama yapıyor ve NaN temizliyor
+                api_data = inf_fetcher.fetch_inflation_data(
+                    start_date_obj=baslangic_tarihi,
+                    end_date_obj=bitis_tarihi
+                )
+                
+                if not api_data.empty:
+                    st.success("Veriler Alındı!")
+                    st.session_state['enflasyon_verisi'] = api_data
+                else:
+                    st.error("Veri alınamadı!")
+
+    # 2. MANUEL ŞABLON OLUŞTURMA
+    if col_manual.button("📅 Şablon Oluştur", key="btn_sablon_olustur"):
+        dates = pd.date_range(start=baslangic_tarihi, end=bitis_tarihi, freq='MS') 
+        template_data = {
+            "Tarih": dates, 
+            "Aylık Enflasyon": [3.0] * len(dates),
+            "Yıllık Enflasyon": [45.0] * len(dates),
+            "Yılbaşına Göre": [25.0] * len(dates),
+            "12 Aylık Ort. Değ.": [50.0] * len(dates),
+            "Oran": [3.0] * len(dates) # Hesaplama için aylık kullanılır
+        }
+        st.session_state['enflasyon_verisi'] = pd.DataFrame(template_data)
+        st.toast("Şablon oluşturuldu.")
+
+    # 3. TABLO GÖSTERİMİ
+    if 'enflasyon_verisi' not in st.session_state or st.session_state['enflasyon_verisi'] is None:
+        st.session_state['enflasyon_verisi'] = pd.DataFrame(columns=["Tarih", "Oran"])
+
+    inf_df = st.session_state['enflasyon_verisi'].copy()
+    
+    if not inf_df.empty:
+        # Tarih formatı düzenlemesi (Görsel tablo için sadece Tarih)
+        if "Tarih" in inf_df.columns:
+             inf_df["Tarih"] = pd.to_datetime(inf_df["Tarih"])
+
+        st.write("📊 **Enflasyon Göstergeleri (%)**")
+        
+        # Formatlı Tablo Gösterimi
+        st.dataframe(
+            inf_df, 
+            hide_index=True,
+            column_config={
+                "Tarih": st.column_config.DateColumn("Dönem", format="YYYY-MM-DD"),
+                "Aylık Enflasyon": st.column_config.NumberColumn("Aylık (MoM)", format="%.2f%%"),
+                "Yıllık Enflasyon": st.column_config.NumberColumn("Yıllık (YoY)", format="%.2f%%"),
+                "Yılbaşına Göre": st.column_config.NumberColumn("Yılbaşına Göre (YTD)", format="%.2f%%"),
+                "12 Aylık Ort. Değ.": st.column_config.NumberColumn("12 Ay Ort.", format="%.2f%%"),
+                "Oran": None # Bunu gizle (Hesaplama sütunu)
+            }
+        )
+        
+        # Grafik Seçeneği
+        gosterim_tipi = st.selectbox(
+            "Grafikte Göster:", 
+            ["Aylık Enflasyon", "Yıllık Enflasyon", "12 Aylık Ort. Değ."], 
+            index=1 # Varsayılan Yıllık
+        )
+        
+        if gosterim_tipi in inf_df.columns:
+            st.line_chart(inf_df, x="Tarih", y=gosterim_tipi, color="#FF4B4B")
+            
+        st.info("ℹ️ Not: Portföy simülasyonunda 'Reel Getiri' hesaplanırken **Aylık Enflasyon** verisi kullanılır.")
+
+# 4. FON LİSTESİ
+st.sidebar.markdown("---")
 kuveyt_turk_fonlari = [
     "KZL", "KZU", "KUT", "KGM", "KSV", "KLU", "KTV", "KTN", "KTR", 
     "KDL", "KTT", "KPD", "KAV", "KCV", "KTM", "KME", "KDE", "KUD", 
     "KUA", "KPC", "KPU", "KPA", "KTS", "KTJ", "KNJ", "KSR", "KIK",
-    "TCD", "MAC", "YAS", "AFT", "IPJ"
+    "TCD", "MAC", "YAS", "AFT", "IPJ", "PUR", "HBF"
 ]
 
 secilen_fonlar = st.sidebar.multiselect(
@@ -48,39 +147,54 @@ secilen_fonlar = st.sidebar.multiselect(
 # --- SİMÜLASYON AYARLARI ---
 portfoy_agirliklari = {}
 baslangic_sermayesi = 100000
+simulasyon_sayisi = 50
 
 if calisma_modu == "💼 Portföy Simülasyonu":
     st.sidebar.markdown("---")
-    st.sidebar.subheader("💰 Simülasyon Ayarları")
+    st.sidebar.subheader("💰 Portföy Yapılandırma")
     
-    # Sermaye Girişi
-    baslangic_sermayesi = st.sidebar.number_input("Başlangıç Sermayesi (TL)", value=100000, step=1000, format="%d")
+    # 1. SERMAYE GİRİŞİ
+    baslangic_sermayesi = st.sidebar.number_input(
+        "Yatırım Sermayesi (TL)", 
+        min_value=1000, 
+        max_value=100000000, 
+        value=100000, 
+        step=1000,
+        format="%d", 
+        help="Başlangıç bakiyenizi buraya yazabilirsiniz."
+    )
     
-    st.sidebar.write("### Fon Ağırlıkları (%)")
+    # 2. SİMÜLASYON SAYISI
+    simulasyon_sayisi = st.sidebar.number_input(
+        "Monte Carlo Senaryo Sayısı", 
+        min_value=10, max_value=5000, value=50, step=10,
+        help="Daha yüksek sayı = Daha hassas tahmin."
+    )
     
-    # Seçilen her fon için slider oluştur
+    st.sidebar.write("### ⚖️ Fon Ağırlıkları (%)")
+    
+    # 3. AĞIRLIKLAR
     toplam_agirlik = 0
     if secilen_fonlar:
-        varsayilan_agirlik = int(100 / len(secilen_fonlar))
+        varsayilan = int(100 / len(secilen_fonlar))
         
         for fon in secilen_fonlar:
-            val = st.sidebar.slider(f"{fon} Ağırlığı", 0, 100, varsayilan_agirlik, key=f"slider_{fon}")
-            portfoy_agirliklari[fon] = val / 100.0
-            toplam_agirlik += val
+            c1, c2 = st.sidebar.columns([3, 1])
+            with c1:
+                slider_val = st.slider(f"{fon}", 0, 100, varsayilan, key=f"slide_{fon}", label_visibility="collapsed")
+            with c2:
+                input_val = st.number_input(f"val_{fon}", 0.0, 100.0, float(slider_val), step=0.5, key=f"num_{fon}", label_visibility="collapsed")
+            
+            st.sidebar.caption(f"**{fon}:** %{input_val}")
+            portfoy_agirliklari[fon] = input_val / 100.0
+            toplam_agirlik += input_val
         
-        if toplam_agirlik != 100:
-            st.sidebar.warning(f"⚠️ Toplam: %{toplam_agirlik} (100 olmalı!)")
+        if abs(toplam_agirlik - 100) > 0.1:
+            st.sidebar.error(f"⚠️ Toplam: %{toplam_agirlik:.1f} (100 olmalı!)")
         else:
-            st.sidebar.success("✅ Toplam: %100")
+            st.sidebar.success("✅ Dağılım Dengeli (%100)")
     else:
-        st.sidebar.info("Lütfen önce yukarıdan fon seçiniz.")
-
-st.sidebar.markdown("---")
-
-# Tarih Seçimi
-col1, col2 = st.sidebar.columns(2)
-baslangic_tarihi = col1.date_input("Başlangıç", datetime.now() - timedelta(days=365))
-bitis_tarihi = col2.date_input("Bitiş", datetime.now())
+        st.sidebar.info("Fon seçiniz.")
 
 # Buton Metni Ayarı
 if calisma_modu == "💼 Portföy Simülasyonu":
@@ -88,13 +202,13 @@ if calisma_modu == "💼 Portföy Simülasyonu":
 else:
     buton_metni = "🚀 Analizi Başlat"
 
-# --- SESSION STATE (HAFIZA) KONTROLÜ ---
+# --- SESSION STATE KONTROLÜ ---
 if 'analiz_verileri' not in st.session_state:
     st.session_state['analiz_verileri'] = None
 if 'varlik_dagilimi' not in st.session_state:
-    st.session_state['varlik_dagilimi'] = {} # Yeni: Varlık dağılımını sakla
+    st.session_state['varlik_dagilimi'] = {} 
 
-# --- VERİ ÇEKME İŞLEMİ (Sadece butona basınca çalışır) ---
+# --- VERİ ÇEKME İŞLEMİ ---
 if st.sidebar.button(buton_metni, type="primary"):
     
     if not secilen_fonlar:
@@ -126,8 +240,7 @@ if st.sidebar.button(buton_metni, type="primary"):
                             final_df["Date"] = pd.to_datetime(final_df["Date"])
                             tum_veriler.append(final_df)
                     
-                    # --- YENİ: VARLIK DAĞILIMINI ÇEK (Sadece son tarih için) ---
-                    # Bitiş tarihine en yakın veriyi almak için bitiş tarihini gönderiyoruz
+                    # Varlık Dağılımını Çek
                     asset_df = fetcher.fetch_asset_allocation(fon, str(bitis_tarihi))
                     if not asset_df.empty:
                         varlik_dagilimlari[fon] = asset_df
@@ -153,7 +266,7 @@ if st.sidebar.button(buton_metni, type="primary"):
             # --- VERİYİ HAFIZAYA KAYDET ---
             if tum_veriler:
                 st.session_state['analiz_verileri'] = tum_veriler
-                st.session_state['varlik_dagilimi'] = varlik_dagilimlari # Kaydet
+                st.session_state['varlik_dagilimi'] = varlik_dagilimlari 
                 st.success("Veriler başarıyla alındı!")
             else:
                 st.error("Hiçbir veri alınamadı.")
@@ -209,11 +322,15 @@ if st.session_state['analiz_verileri']:
             kar_zarar = son_bakiye - baslangic_sermayesi
             kar_orani = (kar_zarar / baslangic_sermayesi) * 100
             
-            # 1. SKOR KARTLARI
+            # 1. SKOR KARTLARI (inf Kontrolü Ekli)
             col1, col2, col3 = st.columns(3)
             col1.metric("Başlangıç Sermayesi", f"{baslangic_sermayesi:,.0f} TL")
-            col2.metric("Güncel Bakiye (Son)", f"{son_bakiye:,.0f} TL", f"{kar_orani:.2f}%")
-            col3.metric("Net Kar/Zarar", f"{kar_zarar:,.0f} TL")
+            
+            if np.isinf(son_bakiye) or np.isnan(son_bakiye):
+                st.error("⚠️ Veri Hatası: Bakiye hesaplanamadı (Sonsuz veya Tanımsız).")
+            else:
+                col2.metric("Güncel Bakiye (Son)", f"{son_bakiye:,.0f} TL", f"{kar_orani:.2f}%")
+                col3.metric("Net Kar/Zarar", f"{kar_zarar:,.0f} TL")
             
             # --- VaR (RİSK ANALİZİ) ---
             st.markdown("---")
@@ -234,13 +351,39 @@ if st.session_state['analiz_verileri']:
             
             st.markdown("---")
             
-            # 2. GRAFİK (MEVCUT DURUM)
-            st.markdown("### 📈 Portföy Büyüme Grafiği (Geçmiş)")
-            fig_sim = px.line(full_df, x="Date", y="Cumulative_Return", color="FundCode",
-                              title="Portföy vs Diğer Fonlar",
-                              color_discrete_map={"PORTFOY": "red", "USD/TRY": "green"})
-            fig_sim.layout.yaxis.tickformat = ',.0%'
-            fig_sim.update_traces(patch={"line": {"width": 4}}, selector={"legendgroup": "PORTFOY"})
+            # 2. GRAFİK (MEVCUT DURUM + REEL GETİRİ)
+            st.markdown("### 📈 Portföy Büyüme ve Reel Getiri Analizi")
+            
+            # Reel Getiri Hesabı (Aylık Enflasyona Göre)
+            # Burada 'enflasyon_verisi' içindeki 'Oran' (Aylık Enflasyon) sütunu kullanılır.
+            edited_inf_df = st.session_state.get('enflasyon_verisi', pd.DataFrame())
+            if not edited_inf_df.empty and 'Oran' in edited_inf_df.columns:
+                try:
+                    # Enflasyon NaN ise 0 kabul et, yoksa hata veriyor
+                    edited_inf_df["Oran"] = edited_inf_df["Oran"].fillna(0)
+                    portfoy_data = processor.calculate_real_returns(portfoy_data, edited_inf_df)
+                except Exception as e:
+                    st.warning(f"Reel getiri hesaplanırken hata oluştu: {e}")
+            
+            fig_sim = go.Figure()
+            
+            # Nominal Çizgi
+            fig_sim.add_trace(go.Scatter(
+                x=portfoy_data["Date"], y=portfoy_data["Cumulative_Return"], 
+                name="Nominal Getiri (Görünen)", 
+                line=dict(color='red', width=3)
+            ))
+            
+            # Reel Çizgi (Enflasyonun üstünde misin?)
+            if 'Real_Return' in portfoy_data.columns:
+                fig_sim.add_trace(go.Scatter(
+                    x=portfoy_data["Date"], y=portfoy_data["Real_Return"], 
+                    name="Reel Getiri (Enflasyon Arındırılmış)", 
+                    line=dict(color='blue', width=2, dash='dash'),
+                    fill='tonexty' 
+                ))
+            
+            fig_sim.update_layout(title="Nominal vs Reel Getiri (Alım Gücü)", yaxis_tickformat='.1%')
             st.plotly_chart(fig_sim, use_container_width=True)
             
             # --- 3. MARKOWITZ OPTİMİZASYONU ---
@@ -273,39 +416,40 @@ if st.session_state['analiz_verileri']:
                         else:
                             st.warning("Yeterli veri yok.")
 
-            # --- 4. YENİ ÖZELLİK: MONTE CARLO SİMÜLASYONU ---
+            # --- 4. MONTE CARLO SİMÜLASYONU ---
             st.markdown("---")
             st.subheader("🎲 Gelecek Tahmini: Monte Carlo Simülasyonu")
             
             mc_col1, mc_col2 = st.columns([1, 3])
             
             with mc_col1:
-                st.write("Geleceğe yönelik 50 farklı senaryo üretilir.")
+                st.write(f"Geleceğe yönelik **{simulasyon_sayisi}** farklı senaryo üretilir.")
                 gun_sayisi = st.slider("Kaç Gün İleriye Gitmek İstersiniz?", 30, 365, 180)
                 
                 if st.button("🔮 Geleceği Simüle Et", type="primary"):
                     with st.spinner("Olasılıklar hesaplanıyor..."):
-                        # Sadece fonları gönder (Benchmark vs karışmasın)
-                        mc_df = processor.run_monte_carlo_simulation(temp_full_df, portfoy_agirliklari, son_bakiye, days_forward=gun_sayisi)
+                        mc_df = processor.run_monte_carlo_simulation(
+                            temp_full_df, 
+                            portfoy_agirliklari, 
+                            son_bakiye, 
+                            days_forward=gun_sayisi, 
+                            num_simulations=simulasyon_sayisi
+                        )
                         
                         if not mc_df.empty:
-                            # Grafiği Çiz (Spagetti Grafik)
                             with mc_col2:
                                 fig_mc = px.line(mc_df, x='Date', y=mc_df.columns[1:], 
                                                  title=f"Gelecek {gun_sayisi} Gün İçin Olası Senaryolar",
                                                  labels={"value": "Portföy Değeri (TL)", "Date": "Tarih"})
-                                
-                                # Çizgileri biraz şeffaf yapalım ki yoğunluk belli olsun
                                 fig_mc.update_traces(line=dict(width=1), opacity=0.3)
-                                fig_mc.update_layout(showlegend=False) # Efsaneyi gizle (50 tane isim olmasın)
-                                
+                                fig_mc.update_layout(showlegend=False) 
                                 st.plotly_chart(fig_mc, use_container_width=True)
                                 
                                 # İstatistikler
                                 son_gun_degerleri = mc_df.iloc[-1, 1:]
                                 ortalama_senaryo = son_gun_degerleri.mean()
-                                kotu_senaryo = son_gun_degerleri.quantile(0.10) # En kötü %10
-                                iyi_senaryo = son_gun_degerleri.quantile(0.90)  # En iyi %10
+                                kotu_senaryo = son_gun_degerleri.quantile(0.10) 
+                                iyi_senaryo = son_gun_degerleri.quantile(0.90) 
                                 
                                 c1, c2, c3 = st.columns(3)
                                 c1.metric("Kötü Senaryo (Taban)", f"{kotu_senaryo:,.0f} TL")
@@ -315,7 +459,7 @@ if st.session_state['analiz_verileri']:
     # --- DİĞER MODLAR ---
     else:
         st.subheader("📈 Analiz Sonuçları")
-        tab1, tab2, tab3 = st.tabs(["Grafik", "Özet Tablo", "🥧 Varlık Dağılımı"]) # Yeni Tab
+        tab1, tab2, tab3 = st.tabs(["Grafik", "Özet Tablo", "🥧 Varlık Dağılımı"]) 
         
         with tab1:
             fig = px.line(full_df, x="Date", y="Cumulative_Return", color="FundCode")
@@ -324,15 +468,14 @@ if st.session_state['analiz_verileri']:
         with tab2:
             if not ozet_df.empty: st.dataframe(ozet_df)
         
-        # --- YENİ TAB: VARLIK DAĞILIMI ---
         with tab3:
             if varlik_dagilimi:
                 st.info("Bu grafikler fonların en son açıklanan portföy dağılımını gösterir.")
-                cols = st.columns(2) # Yan yana 2 pasta grafik göster
+                cols = st.columns(2) 
                 
                 for i, (fon_kodu, df_asset) in enumerate(varlik_dagilimi.items()):
                     if not df_asset.empty:
-                        with cols[i % 2]: # Sırayla sol/sağ kolona yerleştir
+                        with cols[i % 2]: 
                             fig_pie = px.pie(
                                 df_asset, 
                                 values='Oran', 
