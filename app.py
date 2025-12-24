@@ -10,7 +10,7 @@ from core.processor import DataProcessor
 st.set_page_config(page_title="Fon Analiz Paneli", layout="wide", page_icon="📈")
 
 st.title("📊 Gelişmiş Fon Analiz Paneli")
-st.markdown("Getiri, Risk, Sharpe Oranı ve Detaylı Fiyat Listesi")
+st.markdown("Getiri, Risk, Sharpe Oranı, Dönemsel Kıyaslamalar ve Fiyat Listesi")
 
 # --- YAN MENÜ ---
 st.sidebar.header("⚙️ Analiz Ayarları")
@@ -29,7 +29,8 @@ secilen_fonlar = st.sidebar.multiselect(
 )
 
 col1, col2 = st.sidebar.columns(2)
-baslangic_tarihi = col1.date_input("Başlangıç", datetime.now() - timedelta(days=180))
+# Dönemsel analiz (YTD, 1 Yıl vb.) için biraz geriden başlamak iyidir
+baslangic_tarihi = col1.date_input("Başlangıç", datetime.now() - timedelta(days=365))
 bitis_tarihi = col2.date_input("Bitiş", datetime.now())
 
 if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
@@ -38,7 +39,7 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
         st.warning("Lütfen listeden en az bir fon seçiniz.")
     else:
         # --- HAZIRLIK ---
-        st.info("Veriler çekiliyor... (Çok fon seçtiyseniz lütfen sabırlı olun, TEFAS'ı yormamak için yavaş ilerliyoruz)")
+        st.info("Veriler çekiliyor ve dönem analizleri yapılıyor... (TEFAS limitleri için yavaş ilerliyoruz)")
         bar = st.progress(0)
         durum = st.empty()
         
@@ -47,6 +48,7 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
         
         tum_veriler = []
         ozet_rapor = [] 
+        kiyaslama_rapor = [] # <-- YENİ LİSTE
 
         try:
             for i, fon in enumerate(secilen_fonlar):
@@ -64,7 +66,7 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                         
                         if not final_df.empty:
                             final_df["FundCode"] = fon 
-                            # Tarihi datetime formatına zorla (Sıralama hatasını önler)
+                            # Tarihi datetime formatına zorla
                             final_df["Date"] = pd.to_datetime(final_df["Date"])
                             tum_veriler.append(final_df)
 
@@ -74,13 +76,21 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                                 metrics["Fon Kodu"] = fon
                                 metrics["Fon Adı"] = final_df.iloc[0]["FundName"]
                                 ozet_rapor.append(metrics)
+                            
+                            # 4. DÖNEMSEL GETİRİLERİ HESAPLA (YENİ)
+                            # (processor.py içindeki yeni fonksiyonu kullanıyoruz)
+                            period_rets = processor.calculate_period_returns(final_df)
+                            if period_rets:
+                                period_rets["Fon Kodu"] = fon
+                                period_rets["Fon Adı"] = final_df.iloc[0]["FundName"]
+                                kiyaslama_rapor.append(period_rets)
                     
-                    # ÖNEMLİ: Her fon arasında 2 saniye bekle (Hata almamak için)
+                    # Her fon arasında bekleme
                     time.sleep(2.0)
 
                 except Exception as e:
                     st.error(f"⚠️ {fon} verisi alınırken hata: {e}")
-                    time.sleep(1) # Hata olsa bile bekle
+                    time.sleep(1)
                     continue
 
                 # İlerleme Çubuğu
@@ -92,18 +102,19 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
             # --- SONUÇ EKRANI ---
             if tum_veriler:
                 full_df = pd.concat(tum_veriler, ignore_index=True)
-                
                 # Çift kayıtları temizle
                 full_df = full_df.drop_duplicates(subset=['Date', 'FundCode'])
                 
                 ozet_df = pd.DataFrame(ozet_rapor)
+                kiyaslama_df = pd.DataFrame(kiyaslama_rapor) # <-- YENİ DATAFRAME
 
-                # 4 SEKME
-                tab1, tab2, tab3, tab4 = st.tabs([
+                # 5 SEKME (YENİ SEKME EKLENDİ)
+                tab1, tab2, tab3, tab4, tab5 = st.tabs([
                     "📈 Getiri Grafiği", 
                     "🏆 Performans Karnesi", 
                     "🎲 Risk Analizi (Scatter)",
-                    "📄 Geçmiş Fiyatlar"
+                    "📄 Geçmiş Fiyatlar",
+                    "🆚 Kıyaslama Tablosu" # <-- YENİ TAB
                 ])
 
                 # 1. GRAFİK
@@ -138,7 +149,6 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                     st.subheader("Risk vs Getiri Haritası")
                     if not ozet_df.empty:
                         scatter_data = ozet_df.copy()
-                        # Negatif Sharpe hatasını önle
                         scatter_data["Grafik_Boyutu"] = scatter_data["Sharpe Oranı"].apply(lambda x: max(x, 0.01))
                         
                         fig_scatter = px.scatter(
@@ -156,7 +166,7 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                         fig_scatter.layout.yaxis.tickformat = ',.0%'
                         st.plotly_chart(fig_scatter, use_container_width=True)
 
-                # 4. GEÇMİŞ FİYATLAR (DÜZELTİLDİ ✅)
+                # 4. GEÇMİŞ FİYATLAR
                 with tab4:
                     st.subheader("🗓️ Geçmiş Fiyat Listesi")
                     
@@ -167,20 +177,13 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                     )
                     
                     if gorunum_tipi == "📂 Fona Göre Grupla":
-                        # SIRALAMA MANTIĞI BURADA:
-                        # 1. Önce Fon Koduna Göre (A'dan Z'ye)
-                        # 2. Sonra Tarihe Göre (En YENİ en üstte)
                         display_df = full_df[["Date", "FundCode", "FundName", "Price", "Daily_Return", "Cumulative_Return"]].copy()
-                        
-                        # Tarih olduğundan emin ol
                         display_df["Date"] = pd.to_datetime(display_df["Date"])
-                        
-                        # SIRALAMA KOMUTU:
                         display_df = display_df.sort_values(by=["FundCode", "Date"], ascending=[True, False]).reset_index(drop=True)
                         
                         st.dataframe(
                             display_df.style.format({
-                                "Date": lambda t: t.strftime("%d.%m.%Y"), # Gösterirken gün.ay.yıl yap
+                                "Date": lambda t: t.strftime("%d.%m.%Y"),
                                 "Price": "{:.4f}",
                                 "Daily_Return": "{:.2%}",
                                 "Cumulative_Return": "{:.2%}"
@@ -189,17 +192,38 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                             height=500
                         )
                     else:
-                        # PIVOT GÖRÜNÜM
                         try:
                             pivot_df = full_df.pivot_table(index="Date", columns="FundCode", values="Price", aggfunc='mean')
-                            pivot_df = pivot_df.sort_index(ascending=False) # En yeni tarih en üstte
-                            
-                            # İndeksi tarih formatına çevir
+                            pivot_df = pivot_df.sort_index(ascending=False)
                             pivot_df.index = pivot_df.index.strftime('%d.%m.%Y')
-                            
                             st.dataframe(pivot_df, use_container_width=True)
                         except Exception as e:
                             st.warning("Veriler pivot tablo için uygun değil.")
+
+                # 5. KIYASLAMA TABLOSU (TEFAS TARZI) - YENİ ✅
+                with tab5:
+                    st.subheader("🆚 Dönemsel Getiri Kıyaslaması (TEFAS Tarzı)")
+                    
+                    if not kiyaslama_df.empty:
+                        # Tabloda göstermek istediğimiz sütunlar
+                        k_cols = ["Fon Kodu", "1 Ay", "3 Ay", "6 Ay", "YTD (Yılbaşı)", "1 Yıl"]
+                        
+                        # Eğer veride bu sütunlar varsa seç, yoksa hata vermesin diye filtreliyoruz
+                        existing_cols = [c for c in k_cols if c in kiyaslama_df.columns]
+                        
+                        final_k_df = kiyaslama_df[existing_cols].set_index("Fon Kodu")
+                        
+                        # 1 Aylık getiriye göre sıralayalım (Liderlik tablosu)
+                        sort_col = "1 Ay" if "1 Ay" in final_k_df.columns else final_k_df.columns[0]
+                        final_k_df = final_k_df.sort_values(sort_col, ascending=False)
+                        
+                        st.dataframe(
+                            final_k_df.style.format("{:.2%}", na_rep="-") # Boş verilere çizgi koy
+                            .background_gradient(cmap="RdYlGn", axis=0),  # Yeşilden kırmızıya boya
+                            use_container_width=True
+                        )
+                    else:
+                        st.warning("Kıyaslama verisi hesaplanamadı. Tarih aralığını genişletmeyi deneyin.")
 
                 # EXCEL İNDİRME
                 import io
@@ -208,9 +232,11 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                     full_df.to_excel(writer, index=False, sheet_name='Tum Veriler')
                     if not ozet_df.empty:
                         ozet_df.to_excel(writer, index=False, sheet_name='Ozet Karne')
+                    if not kiyaslama_df.empty:
+                        kiyaslama_df.to_excel(writer, index=False, sheet_name='Kiyaslama') # <-- EKLENDİ
                 
                 st.download_button(
-                    label="📥 Raporu İndir",
+                    label="📥 Detaylı Excel Raporunu İndir",
                     data=buffer.getvalue(),
                     file_name=f"FADeS_Analiz_{datetime.now().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.ms-excel"

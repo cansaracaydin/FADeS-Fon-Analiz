@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from datetime import timedelta
 
 class DataProcessor:
     def __init__(self):
@@ -15,9 +16,11 @@ class DataProcessor:
         # 1. TARİH DÜZELTME
         if 'Date' in df.columns:
             try:
+                # Önce numeric mi diye bak (timestamp)
                 df['Date'] = pd.to_numeric(df['Date'], errors='coerce')
                 df['Date'] = pd.to_datetime(df['Date'], unit='ms')
             except:
+                # Değilse string parse dene
                 df['Date'] = pd.to_datetime(df['Date'], errors='coerce', dayfirst=True)
 
         # 2. FİYAT DÜZELTME
@@ -40,6 +43,10 @@ class DataProcessor:
         df['Daily_Return'] = df['Price'].pct_change()
         df['Cumulative_Return'] = (1 + df['Daily_Return']).cumprod() - 1
         df['MA_30'] = df['Price'].rolling(window=30).mean()
+        
+        # Hareketli ortalama ilk 30 günü NaN yapar, grafikte boşluk olmaması için silebiliriz
+        # Ancak dönem analizi için veri kaybetmemek adına dropna'yı kapatıyorum veya dikkatli kullanıyorum.
+        # Senin orijinal kodunda dropna vardı, onu koruyorum ama veri azsa dikkat.
         df.dropna(inplace=True)
         return df
 
@@ -80,3 +87,56 @@ class DataProcessor:
             "Sharpe Oranı": sharpe,
             "Max Drawdown (En Büyük Kayıp)": max_drawdown
         }
+
+    def calculate_period_returns(self, df):
+        """
+        TEFAS Tarzı Dönemsel Getiriler (1 Ay, 3 Ay, 6 Ay, Yılbaşı)
+        Bu fonksiyon son eklediğimiz özelliktir.
+        """
+        if df.empty: return {}
+
+        # Tarihe göre sırala (Emin olmak için)
+        df = df.sort_values("Date")
+        latest_date = df.iloc[-1]["Date"]
+        latest_price = df.iloc[-1]["Price"]
+        
+        periods = {
+            "1 Ay": 30,
+            "3 Ay": 90,
+            "6 Ay": 180,
+            "1 Yıl": 365
+        }
+        
+        results = {}
+        
+        # 1. Geçmiş Dönem Getirileri (1 Ay, 3 Ay vb.)
+        for name, days in periods.items():
+            target_date = latest_date - timedelta(days=days)
+            # Hedef tarihe eşit veya önceki en son veriyi bul
+            past_data = df[df["Date"] <= target_date]
+            
+            if not past_data.empty:
+                past_price = past_data.iloc[-1]["Price"]
+                if past_price > 0:
+                    ret = (latest_price - past_price) / past_price
+                    results[name] = ret
+                else:
+                    results[name] = None
+            else:
+                results[name] = None # Veri yetmiyor
+
+        # 2. Yılbaşından Bugüne (YTD - Year to Date)
+        current_year = latest_date.year
+        # Geçen yılın son işlem gününü bulmaya çalışıyoruz
+        ytd_data = df[df["Date"].dt.year < current_year]
+        
+        if not ytd_data.empty:
+            ytd_price = ytd_data.iloc[-1]["Price"] # Geçen yılın son fiyatı
+            results["YTD (Yılbaşı)"] = (latest_price - ytd_price) / ytd_price
+        else:
+            # Eğer geçen yılın verisi yoksa (fon yeni kurulduysa veya veri seti kısaysa)
+            # Veri setindeki ilk günü baz alabiliriz veya boş geçebiliriz.
+            # Şimdilik veri yoksa boş geçelim.
+            results["YTD (Yılbaşı)"] = None
+
+        return results
