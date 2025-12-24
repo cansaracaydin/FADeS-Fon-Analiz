@@ -44,16 +44,13 @@ class DataProcessor:
         df['Cumulative_Return'] = (1 + df['Daily_Return']).cumprod() - 1
         df['MA_30'] = df['Price'].rolling(window=30).mean()
         
-        # Hareketli ortalama ilk 30 günü NaN yapar, grafikte boşluk olmaması için silebiliriz
-        # Ancak dönem analizi için veri kaybetmemek adına dropna'yı kapatıyorum veya dikkatli kullanıyorum.
-        # Senin orijinal kodunda dropna vardı, onu koruyorum ama veri azsa dikkat.
+        # Hareketli ortalama ilk 30 günü NaN yapar.
         df.dropna(inplace=True)
         return df
 
     def calculate_risk_metrics(self, df):
         """
         ÖZET İSTATİSTİKLER (Tablo ve Scatter Grafik için)
-        Tek bir satır (Scalar) değerler döndürür.
         """
         if df.empty or len(df) < 2:
             return None
@@ -65,18 +62,16 @@ class DataProcessor:
         total_return = ((df['Price'].iloc[-1] - df['Price'].iloc[0]) / df['Price'].iloc[0])
 
         # 2. Yıllık Volatilite (Risk)
-        # Standart sapma * kök(252 iş günü)
         volatility = daily_returns.std() * np.sqrt(252)
 
-        # 3. Sharpe Oranı (Risksiz faiz 0 varsayıldı)
-        # (Yıllık Getiri / Yıllık Risk)
+        # 3. Sharpe Oranı
         mean_return = daily_returns.mean() * 252
         if volatility == 0:
             sharpe = 0
         else:
             sharpe = mean_return / volatility
 
-        # 4. Maximum Drawdown (En büyük düşüş)
+        # 4. Maximum Drawdown
         rolling_max = df['Price'].cummax()
         drawdown = (df['Price'] - rolling_max) / rolling_max
         max_drawdown = drawdown.min()
@@ -91,11 +86,9 @@ class DataProcessor:
     def calculate_period_returns(self, df):
         """
         TEFAS Tarzı Dönemsel Getiriler (1 Ay, 3 Ay, 6 Ay, Yılbaşı)
-        Bu fonksiyon son eklediğimiz özelliktir.
         """
         if df.empty: return {}
 
-        # Tarihe göre sırala (Emin olmak için)
         df = df.sort_values("Date")
         latest_date = df.iloc[-1]["Date"]
         latest_price = df.iloc[-1]["Price"]
@@ -109,10 +102,9 @@ class DataProcessor:
         
         results = {}
         
-        # 1. Geçmiş Dönem Getirileri (1 Ay, 3 Ay vb.)
+        # 1. Geçmiş Dönem Getirileri
         for name, days in periods.items():
             target_date = latest_date - timedelta(days=days)
-            # Hedef tarihe eşit veya önceki en son veriyi bul
             past_data = df[df["Date"] <= target_date]
             
             if not past_data.empty:
@@ -123,20 +115,57 @@ class DataProcessor:
                 else:
                     results[name] = None
             else:
-                results[name] = None # Veri yetmiyor
+                results[name] = None
 
-        # 2. Yılbaşından Bugüne (YTD - Year to Date)
+        # 2. Yılbaşından Bugüne (YTD)
         current_year = latest_date.year
-        # Geçen yılın son işlem gününü bulmaya çalışıyoruz
         ytd_data = df[df["Date"].dt.year < current_year]
         
         if not ytd_data.empty:
-            ytd_price = ytd_data.iloc[-1]["Price"] # Geçen yılın son fiyatı
+            ytd_price = ytd_data.iloc[-1]["Price"]
             results["YTD (Yılbaşı)"] = (latest_price - ytd_price) / ytd_price
         else:
-            # Eğer geçen yılın verisi yoksa (fon yeni kurulduysa veya veri seti kısaysa)
-            # Veri setindeki ilk günü baz alabiliriz veya boş geçebiliriz.
-            # Şimdilik veri yoksa boş geçelim.
             results["YTD (Yılbaşı)"] = None
 
         return results
+
+    def calculate_correlation_matrix(self, full_df):
+        """
+        Korelasyon Matrisi Hesaplar
+        """
+        if full_df.empty: return pd.DataFrame()
+
+        pivot_df = full_df.pivot_table(index="Date", columns="FundCode", values="Price")
+        returns_df = pivot_df.pct_change().dropna()
+        corr_matrix = returns_df.corr()
+        
+        return corr_matrix
+
+    def normalize_for_comparison(self, df_fund, df_benchmark, benchmark_name="USD/TRY"):
+        """
+        YENİ EKLENEN FONKSİYON: 
+        Fon ve Benchmark (Dolar/Altın) verilerini tarihe göre eşleştirip,
+        ikisini de aynı noktadan (0%) başlatarak kıyaslama tablosu oluşturur.
+        
+        """
+        if df_fund.empty or df_benchmark.empty:
+            return pd.DataFrame()
+
+        # 1. Tarihleri eşleştir (Inner Join: İkisinde de olan tarihleri al)
+        merged = pd.merge(
+            df_fund[["Date", "Price", "FundName"]],
+            df_benchmark[["Date", "Price"]],
+            on="Date",
+            how="inner",
+            suffixes=("", "_Bench")
+        )
+
+        if merged.empty: return pd.DataFrame()
+
+        # 2. İkisini de 0 noktasından başlat (Rebase)
+        # Formül: (Fiyat / İlk_Gün_Fiyatı) - 1
+        # Böylece grafik 0'dan başlar ve kimin daha çok kazandırdığı net görünür.
+        merged["Fund_Cumulative"] = (merged["Price"] / merged["Price"].iloc[0]) - 1
+        merged[f"{benchmark_name}_Cumulative"] = (merged["Price_Bench"] / merged["Price_Bench"].iloc[0]) - 1
+
+        return merged
