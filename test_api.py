@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from core.inflation_fetcher import InflationFetcher
 
 # Sınıfı çağır (Anahtar zaten dosyanın içinde gömülü)

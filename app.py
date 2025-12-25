@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -134,20 +135,19 @@ st.sidebar.markdown("---")
 kuveyt_turk_fonlari = [
     "KZL", "KZU", "KUT", "KGM", "KSV", "KLU", "KTV", "KTN", "KTR", 
     "KDL", "KTT", "KPD", "KAV", "KCV", "KTM", "KME", "KDE", "KUD", 
-    "KUA", "KPC", "KPU", "KPA", "KTS", "KTJ", "KNJ", "KSR", "KIK",
-    "TCD", "MAC", "YAS", "AFT", "IPJ", "PUR", "HBF"
+    "KUA", "KPC", "KPU", "KPA", "KTS", "KTJ", "KNJ", "KSR", "KIK"
 ]
 
 secilen_fonlar = st.sidebar.multiselect(
     "Fonları Seçin:",
     options=kuveyt_turk_fonlari, 
-    default=["KZL", "KZU", "KUT"] 
+    default=["KUT", "KPC", "KCV", "KNJ", "KTJ", "KGM"] 
 )
 
 # --- SİMÜLASYON AYARLARI ---
 portfoy_agirliklari = {}
 baslangic_sermayesi = 100000
-simulasyon_sayisi = 50
+simulasyon_sayisi = 100
 
 if calisma_modu == "💼 Portföy Simülasyonu":
     st.sidebar.markdown("---")

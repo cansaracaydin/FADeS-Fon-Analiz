@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from core.tefas_fetcher import TefasFetcher
 from core.processor import DataProcessor
 from core.visualizer import Visualizer
