@@ -122,11 +122,9 @@ class InflationFetcher:
                 cols = ["Aylık Enflasyon", "Yılbaşına Göre", "Yıllık Enflasyon", "12 Aylık Ort. Değ.", "Oran"]
                 final_df[cols] = final_df[cols].round(2)
                 
-                print(f"✅ BAŞARILI: {len(final_df)} aylık veri hazır (NaN temizlendi).")
                 return final_df
             
             else:
-                print(f"⚠️ Hata Kodu: {response.status_code}")
                 return pd.DataFrame()
 
         except Exception as e:

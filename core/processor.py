@@ -85,23 +85,104 @@ class DataProcessor:
         # 2. Yıllık Volatilite (Risk)
         volatility = daily_returns.std() * np.sqrt(252)
 
-        # 3. Sharpe Oranı
+        # 3. Sharpe Oranı (Risksiz getiri varsayımı: %30 alınabilir ama 0 alıyoruz basitlik için)
         mean_return = daily_returns.mean() * 252
         if volatility == 0 or np.isnan(volatility):
             sharpe = 0
         else:
             sharpe = mean_return / volatility
 
-        # 4. Maximum Drawdown
+        # 4. Maximum Drawdown & Calmar Ratio
         rolling_max = df['Price'].cummax()
         drawdown = (df['Price'] - rolling_max) / rolling_max
         max_drawdown = drawdown.min()
+        
+        # Calmar: Yıllık Getiri / |Max Drawdown|
+        if max_drawdown != 0:
+            calmar = mean_return / abs(max_drawdown)
+        else:
+            calmar = 0
+
+        # 5. Sortino Oranı (Negatif Volatilite)
+        downside_returns = daily_returns[daily_returns < 0]
+        downside_std = downside_returns.std() * np.sqrt(252)
+        if downside_std == 0 or np.isnan(downside_std):
+            sortino = 0
+        else:
+            sortino = mean_return / downside_std
 
         return {
             "Toplam Getiri": total_return,
-            "Yıllık Volatilite (Risk)": volatility,
+            "Yıllık Volatilite": volatility,
             "Sharpe Oranı": sharpe,
-            "Max Drawdown (En Büyük Kayıp)": max_drawdown
+            "Sortino Oranı": sortino,
+            "Calmar Oranı": calmar,
+            "Max Drawdown": max_drawdown
+        }
+
+    def calculate_comparative_metrics(self, fund_df, benchmark_df):
+        """
+        Benchmark ile karşılaştırmalı metrikler: Beta, Alpha, Treynor, R-Square, Information Ratio
+        """
+        if fund_df.empty or benchmark_df.empty: return {}
+        
+        # Ensure Dates are datetime and naive
+        f_df = fund_df.copy()
+        b_df = benchmark_df.copy()
+        
+        f_df['Date'] = pd.to_datetime(f_df['Date'])
+        if f_df['Date'].dt.tz is not None: f_df['Date'] = f_df['Date'].dt.tz_localize(None)
+            
+        b_df['Date'] = pd.to_datetime(b_df['Date'])
+        if b_df['Date'].dt.tz is not None: b_df['Date'] = b_df['Date'].dt.tz_localize(None)
+        
+        # Merge on Date
+        merged = pd.merge(f_df[['Date', 'Daily_Return']], b_df[['Date', 'Daily_Return']], on='Date', suffixes=('_f', '_b')).dropna()
+        
+        # Debugging / Lower threshold
+        if len(merged) < 20: return {}
+        
+        Y = merged['Daily_Return_f']
+        X = merged['Daily_Return_b']
+        
+        # Beta Calculation
+        covariance = np.cov(Y, X)[0][1]
+        variance = np.var(X)
+        if variance == 0: return {}
+        
+        beta = covariance / variance
+        
+        # Alpha Calculation (Jensen's Alpha) - Risk Free assumed 0 for simplicity daily
+        # Alpha = R_p - (Beta * R_m)
+        mean_fund = Y.mean() * 252
+        mean_bench = X.mean() * 252
+        alpha = mean_fund - (beta * mean_bench)
+        
+        # R-Squared
+        correlation_matrix = np.corrcoef(Y, X)
+        correlation_xy = correlation_matrix[0,1]
+        r_squared = correlation_xy**2
+        
+        # Treynor Ratio: (Rp - Rf) / Beta
+        if abs(beta) > 0.01:
+            treynor = mean_fund / beta
+        else:
+            treynor = 0
+            
+        # Information Ratio: (Rp - Rb) / TrackingError
+        active_return = Y - X
+        tracking_error = active_return.std() * np.sqrt(252)
+        if tracking_error > 0:
+            info_ratio = (mean_fund - mean_bench) / tracking_error
+        else:
+            info_ratio = 0
+            
+        return {
+            "Beta": beta,
+            "Alpha": alpha,
+            "Treynor Oranı": treynor,
+            "R-Kare (R²)": r_squared,
+            "Information Ratio": info_ratio
         }
 
     def calculate_period_returns(self, df):
@@ -141,19 +222,47 @@ class DataProcessor:
         returns_df = pivot_df.pct_change().dropna()
         return returns_df.corr()
 
-    def normalize_for_comparison(self, df_fund, df_benchmark, benchmark_name="USD/TRY"):
-        if df_fund.empty or df_benchmark.empty: return pd.DataFrame()
+    def normalize_for_comparison(self, df):
+        if df.empty: return pd.DataFrame()
+        
+        df = df.copy()
+        result_frames = []
+        
+        # Her fon için başlangıcı 0'a endeksle
+        for fund in df['FundCode'].unique():
+            sub = df[df['FundCode'] == fund].copy().sort_values("Date")
+            if not sub.empty:
+                start_price = sub.iloc[0]['Price']
+                sub['Cumulative_Return'] = (sub['Price'] / start_price) - 1
+                result_frames.append(sub)
+                
+        if result_frames:
+            return pd.concat(result_frames, ignore_index=True)
+        return df
 
-        merged = pd.merge(
-            df_fund[["Date", "Price", "FundName"]],
-            df_benchmark[["Date", "Price"]],
-            on="Date", how="inner", suffixes=("", "_Bench")
-        )
-        if merged.empty: return pd.DataFrame()
-
-        merged["Fund_Cumulative"] = (merged["Price"] / merged["Price"].iloc[0]) - 1
-        merged[f"{benchmark_name}_Cumulative"] = (merged["Price_Bench"] / merged["Price_Bench"].iloc[0]) - 1
-        return merged
+    def calculate_drawdown_series(self, df):
+        if df.empty: return pd.DataFrame()
+        df = df.sort_values("Date").copy()
+        
+        rolling_max = df['Price'].cummax()
+        df['Drawdown'] = (df['Price'] - rolling_max) / rolling_max
+        return df[['Date', 'Drawdown']]
+        
+    def calculate_monthly_returns(self, df):
+        if df.empty: return pd.DataFrame()
+        
+        df = df.copy()
+        df['Year'] = df['Date'].dt.year
+        df['Month'] = df['Date'].dt.month
+        
+        monthly = df.groupby(['Year', 'Month'])['Price'].last().pct_change()
+        
+        # Pivot table (Yıl x Ay)
+        pivot = monthly.reset_index().pivot(index='Year', columns='Month', values='Price')
+        
+        # Ay isimleri
+        pivot.columns = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'][0:len(pivot.columns)]
+        return pivot
 
     # ---------------------------------------------------------
     # SİMÜLASYON FONKSİYONU
@@ -164,7 +273,7 @@ class DataProcessor:
         selected_funds = list(weights_dict.keys())
         df_filtered = full_df[full_df['FundCode'].isin(selected_funds)].copy()
         
-        # Pivot ve Temizlik (inf temizliği eklendi)
+        # Pivot ve Temizlik
         pivot_returns = df_filtered.pivot_table(index='Date', columns='FundCode', values='Daily_Return')
         pivot_returns = pivot_returns.replace([np.inf, -np.inf], np.nan).dropna()
 
@@ -193,13 +302,12 @@ class DataProcessor:
         return portfolio_df
 
     # ---------------------------------------------------------
-    # MARKOWITZ ETKİN SINIR (DÜZELTİLMİŞ - HATA VERMEZ)
+    # MARKOWITZ ETKİN SINIR (EFFICIENCY FRONTIER)
     # ---------------------------------------------------------
     def calculate_efficient_frontier(self, full_df, selected_funds, num_portfolios=2000):
         if full_df.empty or len(selected_funds) < 2:
             return pd.DataFrame(), {}
 
-        # Veri Hazırlama
         df_filtered = full_df[full_df['FundCode'].isin(selected_funds)].copy()
         
         try:
@@ -207,81 +315,97 @@ class DataProcessor:
         except:
             return pd.DataFrame(), {}
 
-        # --- Temizlik: Sonsuzları ve NaN'ları uçur ---
         pivot_returns = pivot_returns.replace([np.inf, -np.inf], np.nan).dropna()
-
-        if pivot_returns.empty:
-            return pd.DataFrame(), {}
+        if pivot_returns.empty: return pd.DataFrame(), {}
 
         mean_returns = pivot_returns.mean() * 252
         cov_matrix = pivot_returns.cov() * 252
         num_assets = len(pivot_returns.columns)
 
-        # --- FIX: Varsayılan değerler (Crash Koruması) ---
-        # Eğer optimizasyon başarısız olursa boş liste dönmesin diye Eşit Ağırlık atıyoruz.
-        optimal_weights = np.ones(num_assets) / num_assets 
-        max_sharpe_ratio = -1e9 # Çok düşük başlatıyoruz
+        # --- HELPER FUNCTIONS ---
+        def get_ret_vol_sharpe(weights):
+            weights = np.array(weights)
+            ret = np.sum(mean_returns * weights)
+            vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+            sr = ret / vol if vol > 0 else 0
+            return np.array([ret, vol, sr])
 
-        results = []
-
-        # 1. Simülasyon (Rastgele)
-        for _ in range(num_portfolios):
-            weights = np.random.random(num_assets)
-            weights /= np.sum(weights)
-
-            portfolio_return = np.sum(mean_returns * weights)
-            portfolio_std_dev = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
-            
-            if portfolio_std_dev == 0: sharpe_ratio = 0
-            else: sharpe_ratio = portfolio_return / portfolio_std_dev
-
-            results.append({
-                'Return': portfolio_return,
-                'Volatility': portfolio_std_dev,
-                'Sharpe': sharpe_ratio
-            })
-
-        # 2. Scipy Optimizasyonu (Matematiksel)
         def neg_sharpe(weights):
-            p_ret = np.sum(mean_returns * weights)
-            p_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
-            return -p_ret / p_vol if p_vol > 0 else 0
+            return -get_ret_vol_sharpe(weights)[2]
 
+        def minimize_volatility(weights):
+            return get_ret_vol_sharpe(weights)[1]
+
+        # Constraints & Bounds
         constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-        bounds = tuple((0, 1) for _ in range(num_assets))
-        initial_guess = num_assets * [1. / num_assets,]
+        # MAX WEIGHT CONSTRAINTS (Diversification)
+        # Her fon en az %2, en çok %60 olabilir.
+        # Böylece %100 tek fona yığılmayı engelleriz.
+        bounds = tuple((0.02, 0.60) for _ in range(num_assets))
+        init_guess = [1./num_assets] * num_assets
 
-        try:
-            opt_result = sco.minimize(neg_sharpe, initial_guess, method='SLSQP', bounds=bounds, constraints=constraints)
-            if opt_result.success:
-                optimal_weights = opt_result.x
-                # İyileştirilmiş Sharpe
-                p_ret = np.sum(mean_returns * optimal_weights)
-                p_vol = np.sqrt(np.dot(optimal_weights.T, np.dot(cov_matrix, optimal_weights)))
-                max_sharpe_ratio = p_ret / p_vol if p_vol > 0 else 0
-        except:
-            pass # Hata olursa varsayılan (eşit ağırlık) kalır
-
-        sim_df = pd.DataFrame(results)
+        # 1. MAX SHARPE PORTFOLIO
+        opt_sharpe = sco.minimize(neg_sharpe, init_guess, method='SLSQP', bounds=bounds, constraints=constraints)
+        max_sharpe_w = opt_sharpe.x
+        max_sharpe_metrics = get_ret_vol_sharpe(max_sharpe_w)
         
-        # Sonuçları paketle (optimal_weights artık asla boş değil)
-        best_weights = {col: round(w, 2) for col, w in zip(pivot_returns.columns, optimal_weights)}
-        
-        best_portfolio_stats = {
-            'Return': np.sum(mean_returns * optimal_weights),
-            'Volatility': np.sqrt(np.dot(optimal_weights.T, np.dot(cov_matrix, optimal_weights))),
-            'Sharpe': max_sharpe_ratio,
-            'Weights': best_weights
+        best_sharpe = {
+            'Return': max_sharpe_metrics[0],
+            'Volatility': max_sharpe_metrics[1],
+            'Sharpe': max_sharpe_metrics[2],
+            'Weights': {col: round(w, 2) for col, w in zip(pivot_returns.columns, max_sharpe_w)}
         }
+
+        # 2. MIN VOLATILITY PORTFOLIO
+        opt_vol = sco.minimize(minimize_volatility, init_guess, method='SLSQP', bounds=bounds, constraints=constraints)
+        min_vol_w = opt_vol.x
+        min_vol_metrics = get_ret_vol_sharpe(min_vol_w)
         
-        return sim_df, best_portfolio_stats
+        min_vol = {
+            'Return': min_vol_metrics[0],
+            'Volatility': min_vol_metrics[1],
+            'Sharpe': min_vol_metrics[2],
+            'Weights': {col: round(w, 2) for col, w in zip(pivot_returns.columns, min_vol_w)}
+        }
+
+        # 3. EFFICIENT FRONTIER CURVE
+        # Target returns range from Min Vol Return to Max Asset Return
+        target_rets = np.linspace(min_vol_metrics[0], mean_returns.max(), 30)
+        frontier_vol = []
+        frontier_ret = []
+
+        for tr in target_rets:
+            cons = (
+                {'type': 'eq', 'fun': lambda x: get_ret_vol_sharpe(x)[0] - tr},
+                {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
+            )
+            res = sco.minimize(minimize_volatility, init_guess, method='SLSQP', bounds=bounds, constraints=cons)
+            if res.success:
+                frontier_ret.append(tr)
+                frontier_vol.append(res.fun)
+        
+        frontier_df = pd.DataFrame({'Volatility': frontier_vol, 'Return': frontier_ret})
+
+        # 4. RANDOM SIMULATION (Background Cloud)
+        sim_results = []
+        for _ in range(num_portfolios):
+            w = np.random.random(num_assets)
+            w /= np.sum(w)
+            sim_results.append(get_ret_vol_sharpe(w))
+        
+        sim_df = pd.DataFrame(sim_results, columns=['Return', 'Volatility', 'Sharpe'])
+
+        return {
+            'sim_df': sim_df,
+            'frontier_df': frontier_df,
+            'max_sharpe': best_sharpe,
+            'min_vol': min_vol
+        }
 
     # ---------------------------------------------------------
     # VAR (VALUE AT RISK)
     # ---------------------------------------------------------
     def calculate_value_at_risk(self, full_df, weights_dict, initial_capital=100000, confidence_level=0.95):
-        if full_df.empty or not weights_dict: return None
-
         sim_df = self.calculate_portfolio_simulation(full_df, weights_dict, initial_capital)
         if sim_df.empty: return None
 
@@ -289,25 +413,16 @@ class DataProcessor:
         mean = returns.mean()
         std = returns.std()
 
-        if confidence_level == 0.95: z_score = 1.645
-        elif confidence_level == 0.99: z_score = 2.33
-        else: z_score = 1.645
+        z_score = 2.33 if confidence_level == 0.99 else 1.645
+        var_pct = (z_score * std) - mean
+        var_amt = initial_capital * var_pct
 
-        var_percent = (z_score * std) - mean
-        var_amount = initial_capital * var_percent
-
-        return {
-            "VaR_Amount": abs(var_amount),
-            "VaR_Percent": var_percent,
-            "Confidence": confidence_level
-        }
+        return {"VaR_Amount": abs(var_amt), "VaR_Percent": var_pct, "Confidence": confidence_level}
 
     # ---------------------------------------------------------
     # MONTE CARLO SİMÜLASYONU
     # ---------------------------------------------------------
     def run_monte_carlo_simulation(self, full_df, weights_dict, initial_capital, days_forward=180, num_simulations=50):
-        if full_df.empty or not weights_dict: return pd.DataFrame()
-
         sim_df = self.calculate_portfolio_simulation(full_df, weights_dict, initial_capital)
         if sim_df.empty: return pd.DataFrame()
 
@@ -347,13 +462,10 @@ class DataProcessor:
             inf_copy['Date'] = pd.to_datetime(inf_copy['Tarih'])
         inf_copy['YearMonth'] = inf_copy['Date'].dt.to_period('M')
         
-        # Sütun adı kontrolü
         target_col = 'Oran' if 'Oran' in inf_copy.columns else 'Aylık Enflasyon'
         if target_col not in inf_copy.columns: return df
 
         merged = pd.merge(df, inf_copy[['YearMonth', target_col]], on='YearMonth', how='left')
-        
-        # Eksikleri doldur
         last_val = inf_copy[target_col].iloc[-1] if not inf_copy.empty else 3.0
         merged[target_col] = merged[target_col].fillna(last_val)
         
