@@ -1,0 +1,22 @@
+# Faz 2.5: Refined approach (less is more)
+# Problem: Too many features (28) caused overfitting with limited data
+# Solution: Keep best indicators only, focus on quality over quantity
+
+## Changes:
+1. Reduce lags back to 7 (not 10)
+2. Keep only most predictive indicators:
+   - Return lags (7)
+   - RSI (proven signal)
+   - MACD + Histogram (momentum)
+   - Volatility_7d (recent volatility)
+   - SMA_20 (trend)
+   
+3. Keep XGBoost but with regularization:
+   - Add reg_alpha (L1)
+   - Add reg_lambda (L2)
+   - Lower max_depth to prevent overfitting
+
+## Expected Result:
+- R² should be positive (0.1 - 0.3)
+- Cross-validation scores consistent
+- No overfitting

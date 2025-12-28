@@ -10,14 +10,14 @@ from core.processor import DataProcessor
 processor = DataProcessor()
 
 # -----------------------------------------------------------------------------
-# VIEW 1: DETAYLI ANALİZ
+# VIEW 1: DETAYLI ANALİZ def: definition (tanımlama) pd: pandas 
 # -----------------------------------------------------------------------------
 def render_analysis_view(df: pd.DataFrame, selected_funds: list, inf_df: pd.DataFrame, benchmark_id: str = None):
     """
     Renders the Detailed Analysis view: Charts, Tables, Assets, Risk, Real Return.
     """
     st.subheader("📈 Fon Performans Karnesi")
-    
+    #st: streamlit
     # Identify Benchmark Data
     benchmark_df = pd.DataFrame()
     if benchmark_id and benchmark_id != "Yok":
@@ -517,3 +517,172 @@ def render_market_dashboard(market_df: pd.DataFrame):
                     xaxis_rangeslider_visible=False
                 )
                 st.plotly_chart(fig_detail, use_container_width=True)
+
+# -----------------------------------------------------------------------------
+# VIEW 5: MAKRO ANALİZ (EVDS & FRED)
+# -----------------------------------------------------------------------------
+def render_macro_view(macro_df: pd.DataFrame):
+    """
+    Makroekonomik verileri görselleştirir.
+    """
+    st.subheader("🌍 Makroekonomik Göstergeler")
+    st.caption("TCMB (EVDS) ve Global Piyasalar (FED/VIX) verileri.")
+
+    if macro_df.empty:
+        st.warning("Makro veri çekilemedi.")
+        return
+
+    # En güncel veriler
+    last = macro_df.iloc[-1]
+    
+    # 1. KPI CARDS
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("🇹🇷 TCMB Faizi", f"%{last.get('Faiz (%)', 0):.1f}")
+    c2.metric("💵 Brüt Rezerv", f"${last.get('Rezerv (Milyar $)', 0):.1f} Mr")
+    c3.metric("🇺🇸 ABD 10Y Tahvil", f"%{last.get('ABD 10Y Faiz', 0):.2f}")
+    c4.metric("😨 VIX (Korku)", f"{last.get('VIX (Korku Endeksi)', 0):.1f}")
+
+    # 2. CHARTS
+    t1, t2 = st.tabs(["🇹🇷 Türkiye Ekonomisi", "🌎 Küresel Piyasalar"])
+    
+    with t1:
+        st.markdown("##### TCMB Faiz & Rezerv Dengesi")
+        # Dual Axis Chart
+        fig_tr = go.Figure()
+        fig_tr.add_trace(go.Scatter(x=macro_df['Date'], y=macro_df['Faiz (%)'], name='Faiz (%)', line=dict(color='red', width=3)))
+        fig_tr.add_trace(go.Scatter(x=macro_df['Date'], y=macro_df['Rezerv (Milyar $)'], name='Rezerv ($ Mr)', yaxis='y2', line=dict(color='green', dash='dot')))
+        
+        fig_tr.update_layout(
+            template="plotly_dark",
+            yaxis=dict(title='Faiz (%)', side='left'),
+            yaxis2=dict(title='Rezerv (Milyar $)', side='right', overlaying='y', showgrid=False),
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig_tr, use_container_width=True)
+        
+        if 'Güven Endeksi' in macro_df.columns:
+            st.markdown("##### Reel Kesim Güven Endeksi")
+            fig_conf = px.line(macro_df, x='Date', y='Güven Endeksi', title='Ekonomik Güven (RKGE)', template="plotly_dark")
+            fig_conf.add_hline(y=100, line_dash="dash", line_color="white", annotation_text="Eşik Değer (100)")
+            st.plotly_chart(fig_conf, use_container_width=True)
+
+    with t2:
+        st.markdown("##### Küresel Likidite ve Risk")
+        fig_gl = go.Figure()
+        
+        if 'ABD 10Y Faiz' in macro_df.columns:
+            fig_gl.add_trace(go.Scatter(x=macro_df['Date'], y=macro_df['ABD 10Y Faiz'], name='ABD 10Y (%)', line=dict(color='cyan')))
+            
+        if 'Dolar Endeksi (DXY)' in macro_df.columns:
+            fig_gl.add_trace(go.Scatter(x=macro_df['Date'], y=macro_df['Dolar Endeksi (DXY)'], name='DXY', yaxis='y2', line=dict(color='orange')))
+        
+        fig_gl.update_layout(
+            template="plotly_dark",
+            yaxis=dict(title='ABD 10Y (%)', side='left'),
+            yaxis2=dict(title='DXY', side='right', overlaying='y', showgrid=False),
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig_gl, use_container_width=True)
+
+# -----------------------------------------------------------------------------
+# VIEW 6: FORMÜLLER (LaTeX)
+# -----------------------------------------------------------------------------
+def render_formula_view():
+    """
+    Renders the Financial Formulas view.
+    """
+    st.subheader("📚 Finansal Metrik Formülleri")
+    st.markdown("FADeS tarafından kullanılan temel finansal metriklerin matematiksel hesaplamaları aşağıdadır.")
+    
+    with st.expander("1. Sharpe Oranı (Sharpe Ratio)"):
+        st.latex(r'''
+            Sharpe = \frac{R_p - R_f}{\sigma_p}
+        ''')
+        st.write("""
+        * **Rp**: Portföy Getirisi (Return)
+        * **Rf**: Riskiz Faiz Oranı (Risk Free Rate - Mevduat/Tahvil)
+        * **σp**: Portföyün Standart Sapması (Volatilite)
+        * **Anlamı**: Risk başına elde edilen ekstra getiri. Yüksek olması iyidir.
+        """)
+
+    with st.expander("2. Standart Sapma (Volatilite)"):
+        st.latex(r'''
+            \sigma_p = \sqrt{\frac{1}{N-1} \sum_{i=1}^{N} (R_i - \bar{R})^2}
+        ''')
+        st.write("""
+        * **Anlamı**: Getirilerin ortalamadan ne kadar saptığını gösterir. Yüksek olması riskin yüksek olduğunu ifade eder.
+        """)
+
+    with st.expander("3. Maksimum Düşüş (Max Drawdown)"):
+        st.latex(r'''
+            MDD = \min \left( \frac{P_t - P_{peak}}{P_{peak}} \right)
+        ''')
+        st.write("""
+        * **Pt**: T anındaki Fiyat
+        * **Ppeak**: T anına kadar görülen En Yüksek Fiyat
+        * **Anlamı**: Zirveden dibe yaşanan en büyük kayıp oranıdır.
+        """)
+
+    with st.expander("4. Portföy Varyansı (Markowitz)"):
+        st.latex(r'''
+            \sigma_p^2 = \sum_{i} \sum_{j} w_i w_j \sigma_{ij}
+        ''')
+        st.write("""
+        * **wi, wj**: Varlıkların portföydeki ağırlıkları
+        * **σij**: Varlıklar arasındaki kovaryans
+        * **Anlamı**: Çeşitlendirme etkisiyle portföy riskinin hesaplanması.
+        """)
+
+# -----------------------------------------------------------------------------
+# VIEW 7: REEL GETİRİ (REAL RETURN)
+# -----------------------------------------------------------------------------
+def render_real_return_view(df: pd.DataFrame, inf_df: pd.DataFrame):
+    """
+    Renders the Real Return Analysis view (Inflation Adjusted).
+    """
+    st.subheader("💰 Enflasyon Arındırılmış (Reel) Getiri")
+    st.caption("Fon getirilerinin TÜFE (Enflasyon) karşısındaki net performansı.")
+
+    if df.empty:
+        st.warning("Fon verisi yok.")
+        return
+
+    if inf_df.empty:
+        st.warning("Enflasyon verisi eksik. Sol panelden EVDS anahtarı girin veya 'Şablon' butonunu kullanın.")
+        return
+
+    # Layout: Left for Selection, Right for Chart
+    c_sel, c_res = st.columns([1, 3])
+    
+    with c_sel:
+        st.markdown("##### Fon Seçimi")
+        f_sel = st.selectbox("İncelenecek Fon:", df['FundCode'].unique(), key="rr_fund_select")
+        
+        # Show Inflation Data Table
+        with st.expander("📊 Enflasyon Tablosu", expanded=True):
+            # Format cols if exists
+            show_inf = inf_df.copy()
+            if 'Date' in show_inf.columns: show_inf['Date'] = show_inf['Date'].dt.date
+            st.dataframe(show_inf, use_container_width=True, height=250)
+
+    with c_res:
+        # 1. Real Return Chart
+        sub = df[df['FundCode']==f_sel]
+        
+        # Calculate Real Returns using Processor
+        res = processor.calculate_real_returns(sub, inf_df)
+        
+        if not res.empty:
+            fig_real = go.Figure()
+            fig_real.add_trace(go.Scatter(x=res['Date'], y=res['Cumulative_Return'], name="Nominal (Görünen)", line=dict(color='#ef5350')))
+            fig_real.add_trace(go.Scatter(x=res['Date'], y=res['Real_Return'], name="Reel (Net)", line=dict(color='#66bb6a', dash='dash'), fill='tonexty'))
+            fig_real.update_layout(title=f"{f_sel} - Reel Getiri Analizi", template="plotly_dark", yaxis_tickformat='.1%')
+            st.plotly_chart(fig_real, use_container_width=True, key="chart_real_return_main")
+            
+            # 2. Monthly Inflation Chart
+            if 'Aylık Enflasyon' in inf_df.columns:
+                st.markdown("##### 📉 Aylık Enflasyon Seyri")
+                fig_inf = px.bar(inf_df, x='Date', y='Aylık Enflasyon', title="Aylık Enflasyon Oranları (%)", template="plotly_dark")
+                fig_inf.update_traces(marker_color='#bfa15f')
+                st.plotly_chart(fig_inf, use_container_width=True, key="chart_real_return_inflation")
+

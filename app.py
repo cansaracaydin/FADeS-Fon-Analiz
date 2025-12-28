@@ -4,10 +4,10 @@ import pandas as pd
 from datetime import datetime, timedelta
 import time
 
+
 # --- CUSTOM MODULES ---
 from core.tefas_fetcher import TefasFetcher
 from core.processor import DataProcessor
-from core.market_fetcher import MarketFetcher
 from core.inflation_fetcher import InflationFetcher
 from core.ai_forecaster import AIForecaster
 
@@ -16,10 +16,11 @@ from core.style_config import apply_custom_css
 import core.views as views
 
 # --- PAGE CONFIGURATION ---
+# --- PAGE CONFIGURATION ---
 st.set_page_config(
     page_title="Kuveyt Türk Portföy Akademisi | Pro Terminal",
     layout="wide",
-    page_icon="🦅",
+    page_icon="📊",
     initial_sidebar_state="expanded"
 )
 
@@ -27,16 +28,11 @@ st.set_page_config(
 apply_custom_css()
 
 # --- HEADER ---
-col_logo, col_title = st.columns([0.4, 4.6])
-with col_logo:
-    st.markdown("## 🦅")
-with col_title:
-    st.title("Kuveyt Türk Portföy Akademisi")
-    st.caption("Finansal Analiz | Simülasyon | Yapay Zeka | Risk Yönetimi Terminali (v5.1 - Pro Refactor)")
+st.title("Kuveyt Türk Portföy Akademisi")
+st.caption("Finansal Analiz | Simülasyon | Yapay Zeka | Risk Yönetimi Terminali (v5.2)")
 
 # --- INITIALIZATION ---
 processor = DataProcessor()
-market_fetcher = MarketFetcher()
 ai_forecaster = AIForecaster()
 
 # --- SIDEBAR: KONTROL MERKEZİ ---
@@ -62,27 +58,13 @@ with st.sidebar:
     
     st.divider()
 
-    # --- SIDEBAR: Market Summary ---
-    st.sidebar.markdown("### 🌍 Piyasa Özeti")
-    
-    # Fetch Live Data (Cached in Session State to avoid re-fetching on every interaction)
-    if 'market_data' not in st.session_state:
-        with st.spinner("Piyasa verileri alınıyor..."):
-            st.session_state['market_data'] = market_fetcher.fetch_live_data()
-    
-    m_data = st.session_state.get('market_data', {})
-    
-    if m_data:
-        # Row 1: BIST & Gold
-        mc1, mc2 = st.sidebar.columns(2)
-        mc1.metric("BIST 100", f"{m_data.get('BIST 100', 0):,.0f}", delta=None)
-        mc2.metric("Gram Altın", f"{m_data.get('Gram Altın', 0):.0f} ₺", delta=None)
+    # --- SIDEBAR: Market Summary REMOVED ---
         
-        # Row 2: USD & EUR
-        mc3, mc4 = st.sidebar.columns(2)
-        mc3.metric("Dolar/TL", f"{m_data.get('Dolar/TL', 0):.2f} ₺", delta=None)
-        mc4.metric("Euro/TL", f"{m_data.get('Euro/TL', 0):.2f} ₺", delta=None)
-        
+    if st.sidebar.button("🧹 Önbelleği Temizle"):
+        st.cache_data.clear()
+        st.session_state.clear()
+        st.rerun()
+
     st.sidebar.divider()
     
     # --- ENFLASYON YÖNETİMİ ---
@@ -93,12 +75,14 @@ with st.sidebar:
         c_api, c_man = st.columns(2)
         if c_api.button("🔄 API'den Çek"):
             if evds_key_input:
+                st.session_state['evds_key'] = evds_key_input
                 try:
                     inf_f = InflationFetcher(evds_key_input)
                     api_data = inf_f.fetch_inflation_data(start_date, end_date)
                     if not api_data.empty:
                         st.session_state['inf_data'] = api_data
                         st.success(f"{len(api_data)} ay veri alındı!")
+                        st.rerun() # Refresh to update other components using the key
                     else: st.error("Veri boş döndü.")
                 except Exception as e: st.error(f"Hata: {e}")
             else: st.warning("Anahtar giriniz.")
@@ -286,88 +270,98 @@ with st.sidebar:
     start_btn = st.button(btn_label, type="primary", use_container_width=True)
 
 # --- DATA FETCHING & STATE MANAGEMENT ---
+# --- DATA FETCHING & STATE MANAGEMENT ---
 if 'main_df' not in st.session_state: st.session_state.main_df = None
-if 'assets_map' not in st.session_state: st.session_state.assets_map = {}
+if 'assets_map' not in st.session_state: st.session_state.assets_map = None
 
+# Initialize Static Fetchers (Market & Macro - REMOVED)
+
+# Cache Market & Macro Data - REMOVED
+
+# --- GLOBAL ACTION HANDLER (Veri Çekme) ---
+# Butona basıldığında veya session'da veri yoksa ama fonlar seçiliyse...
+# Aslında sadece butona basılınca çalışmalı çünkü maliyetli işlem.
 if start_btn:
     if not selected_funds:
-        st.warning("Lütfen fon seçiniz.")
+        st.warning("Lütfen sol menüden fon seçin.")
     else:
         with st.status("Veriler Toplanıyor...", expanded=True) as status:
             tf = TefasFetcher()
             raw_data = []
-            asset_allocs = {}
             
-            # 1. FUNDS
-            total_items = len(selected_funds)
-            for i, f in enumerate(selected_funds):
-                status.write(f"📥 {f} verisi çekiliyor...")
-                try:
-                    # Price
-                    df = tf.fetch_data(f, str(start_date), str(end_date))
-                    if not df.empty:
-                        clean = processor.clean_data(df)
-                        clean = processor.add_financial_metrics(clean)
-                        clean['FundCode'] = f
-                        raw_data.append(clean)
-                    
-                except Exception as e:
-                    st.toast(f"{f} Hatası: {str(e)}")
-                    
+            status.write("📥 TEFAS verileri çekiliyor...")
+            for f in selected_funds:
+                # fetch_data requires start, end
+                df = tf.fetch_data(f, start_date, datetime.today())
+                
+                if not df.empty:
+                    # Clean and Process
+                    clean = processor.clean_data(df)
+                    clean = processor.add_financial_metrics(clean)
+                    clean['FundCode'] = f
+                    raw_data.append(clean)
+            
             tf.close()
             
-            # 2. BENCHMARK
-            if benchmark != "Yok" and benchmark != "Enflasyon (TÜFE)":
-                status.write(f"📥 Benchmark ({benchmark}) ekleniyor...")
-                sym = "USDTRY=X" if "Dolar" in benchmark else "GC=F" if "Altın" in benchmark else "XU100.IS"
-                b_df = market_fetcher.fetch_benchmark(sym, str(start_date), str(end_date))
-                
-                if not b_df.empty:
-                    b_df = processor.add_financial_metrics(b_df)
-                    b_df['FundCode'] = benchmark.split(" ")[0]
-                    raw_data.append(b_df)
-                    st.toast(f"✅ {benchmark} verisi başarıyla eklendi.")
-                else:
-                    st.error(f"⚠️ {benchmark} verisi çekilemedi! (Yahoo Finance erişim sorunu veya sembol hatası)")
-                    st.toast(f"❌ {benchmark} çekilemedi.")
-                    
-            if raw_data:
-                st.session_state.main_df = pd.concat(raw_data, ignore_index=True)
-                # st.session_state.assets_map -> Removed as per user request
-                status.update(label="✅ Veri toplama tamamlandı!", state="complete", expanded=False)
+            if not raw_data:
+                st.error("Veri bulunamadı!")
             else:
-                status.update(label="❌ Veri çekilemedi!", state="error")
+                status.write("🧹 Veriler işleniyor...")
+                main_df = pd.concat(raw_data, ignore_index=True)
+                st.session_state.main_df = main_df
+                
+                status.update(label="✅ Veriler Hazır! Analiz Sekmelerini Kullanabilirsiniz.", state="complete", expanded=False)
 
-# --- MAIN RENDER LOGIC ---
-df = st.session_state.main_df
-# assets = st.session_state.assets_map -> Removed
-inf_df = st.session_state.get('inf_data', pd.DataFrame())
+# --- MAIN TABS ---
+# Tabs: Analiz (Fon), Piyasa (BIST/Dolar), Makro (Faiz/Rezerv), Simülasyon, Diğerleri
+# --- MAIN TABS ---
+tab_analiz, tab_sim, tab_reel, tab_ai, tab_formul = st.tabs([
+    "📈 Fon Analizi", 
+    "💼 Portföy Simülasyonu", 
+    "Reel Getiri", 
+    "🧠 AI Tahmin", 
+    "📚 Formüller"
+])
 
-if df is not None and not df.empty:
-    st.markdown("---")
-    
-    # Route to Views
-    if calisma_modu == "📈 Detaylı Analiz & Kıyaslama":
-        views.render_analysis_view(df, selected_funds, inf_df, benchmark)
-        
-    elif calisma_modu == "💼 Portföy Simülasyonu":
-        views.render_simulation_view(df, selected_funds, sim_weights, budget, processor)
-        
-    elif calisma_modu == "🤖 Yapay Zeka Tahmini":
-        views.render_ai_view(df, ai_forecaster)
-        
-else:
-    # Empty State
-    st.info("👈 Analize başlamak için sol menüden fonları seçip 'Analizi Çalıştır' butonuna basınız.")
-    
-    # Welcome / Intro graphics could go here
-    st.markdown("""
-    <div style='text-align: center; color: #666; padding: 50px;'>
-        <h3>🦅 Hoş Geldiniz</h3>
-        <p>Kuveyt Türk Portföy Akademisi terminali ile profesyonel fon analizi yapın.</p>
-    </div>
-    """, unsafe_allow_html=True)
+# --- TAB 1: FON ANALİZİ (ESKİ DEFAULT VIEW) ---
+# --- TAB 1: FON ANALİZİ (ESKİ DEFAULT VIEW) ---
+with tab_analiz:
+    # Render Analysis if Data Exists
+    if st.session_state.main_df is not None:
+        inf_data = st.session_state.get('inf_data', pd.DataFrame())
+        views.render_analysis_view(st.session_state.main_df, selected_funds, inf_data, benchmark)
+    else:
+        st.info("👈 Analize başlamak için sol menüden fon seçip 'Analizi Çalıştır' butonuna basın.")
 
-# --- FOOTER ---
-st.markdown("---")
-st.markdown("<center style='color: #666;'>Kuveyt Türk Portföy Akademisi - 2025 | Developed with ❤️ and Python</center>", unsafe_allow_html=True)
+
+
+# --- TAB 4: SİMÜLASYON ---
+with tab_sim:
+    if st.session_state.main_df is not None:
+        views.render_simulation_view(st.session_state.main_df, selected_funds, sim_weights, budget, processor)
+    else:
+        st.info("Simülasyon için önce 'Analizi Çalıştır' butonuna basarak fon verilerini yükleyiniz.")
+
+# --- TAB 5: REEL GETİRİ ---
+with tab_reel:
+    if st.session_state.main_df is not None:
+        inf_fetcher = InflationFetcher()
+        inflation_data = inf_fetcher.fetch_inflation_data(start_date)
+        if hasattr(views, 'render_real_return_view'):
+            views.render_real_return_view(st.session_state.main_df, inflation_data)
+        else:
+            st.info("Reel getiri analizi için 'Fon Analizi' sekmesindeki ilgili tabloyu kullanabilirsiniz.")
+    else:
+        st.info("Veri yüklenmedi.")
+
+# --- TAB 6: AI TAHMİN ---
+with tab_ai:
+    if st.session_state.main_df is not None:
+        ai_forecaster = AIForecaster()
+        views.render_ai_view(st.session_state.main_df, ai_forecaster)
+    else:
+        st.info("Veri yüklenmedi.")
+
+# --- TAB 5: FORMÜLLER ---
+with tab_formul:
+    views.render_formula_view()

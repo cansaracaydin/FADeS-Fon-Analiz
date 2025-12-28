@@ -126,35 +126,49 @@ class MarketFetcher:
         """
         Piyasa analizi için geçmiş verileri çeker (Grafikler için).
         """
+    def fetch_market_history(self, period="1y"):
+        from core.utils import fetch_symbol_robust
+        
         symbols = ['XU100.IS', 'TRY=X', 'EURTRY=X', 'GC=F']
+        rename_map = {
+            'XU100.IS': 'BIST 100', 
+            'TRY=X': 'Dolar/TL', 
+            'EURTRY=X': 'Euro/TL', 
+            'GC=F': 'Ons Altın' 
+        }
+        
+        data_dict = {}
+        
         try:
-            # Download history
-            df = yf.download(symbols, period=period, progress=False)
-            
-            # Handle MultiIndex
-            if isinstance(df.columns, pd.MultiIndex):
-                try:
-                    df = df['Close']
-                except KeyError:
-                    df = df['Adj Close']
-            
-            # Forward Fill (Tatil günlerini doldur)
-            df = df.ffill().dropna()
+            for sym in symbols:
+                # Use robust fetcher
+                df_sym = fetch_symbol_robust(sym, period=period)
+                if df_sym.empty:
+                    print(f"⚠️ {sym} boş döndü (Robust Fetcher).")
+                    continue
+                
+                # Extract Close/Adj Close
+                col = 'Adj Close' if 'Adj Close' in df_sym.columns else 'Close'
+                if col in df_sym.columns:
+                     friendly_name = rename_map.get(sym, sym)
+                     data_dict[friendly_name] = df_sym[col]
 
-            # Calculate Gram Gold History
-            # Gram = (Ons * USD) / 31.1035
-            if 'GC=F' in df.columns and 'TRY=X' in df.columns:
-                df['Gram Altın'] = (df['GC=F'] * df['TRY=X']) / 31.1035
+            if not data_dict:
+                return pd.DataFrame()
+                
+            df_combined = pd.DataFrame(data_dict)
             
-            # Rename for display
-            rename_map = {
-                'XU100.IS': 'BIST 100',
-                'TRY=X': 'Dolar/TL',
-                'EURTRY=X': 'Euro/TL'
-            }
-            df = df.rename(columns=rename_map)
+            # Add Gram Gold (Calculated)
+            if 'Ons Altın' in df_combined.columns and 'Dolar/TL' in df_combined.columns:
+                 df_combined['Gram Altın'] = (df_combined['Ons Altın'] * df_combined['Dolar/TL']) / 31.10
             
-            return df
+            df_combined = df_combined.ffill().dropna(how='all')
+            
+            if df_combined.empty:
+                 return pd.DataFrame()
+
+            return df_combined
+
         except Exception as e:
-            print(f"Geçmiş veri hatası: {e}")
+            print(f"Market Fetcher Error: {e}")
             return pd.DataFrame()
